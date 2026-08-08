@@ -66,7 +66,7 @@ echo
 echo "--- Prerequis : moteur de terminal Konsole ---"
 if ! "$SPYDER_PYTHON" -c "import smartos_konsole" 2>/dev/null; then
   echo "Moteur Konsole absent : installation prealable." >&2
-  bash greffon_moteur_konsole || {
+  bash "$(dirname "$PLUGIN_DIR")/smartos_konsole/outils_smartos/installer_dans_venv.sh" "$SPYDER_PYTHON" "$SANS_TESTS" "$OUTIL_INSTALL" "$OUTIL_CONFIG" "$SPYDER_INI" || {
     echo "ERREUR : le moteur Konsole n'a pas pu etre installe." >&2
     echo "         Le panneau n'a alors ni terminal ni shell." >&2
     exit 1; }
