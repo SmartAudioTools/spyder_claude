@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "spyder-claude"
+version = "0.1.0"
+description = "Les instances de Claude Code dans un dock Spyder : un onglet par instance, l'etat de chacune a l'oeil, mosaique quand le panneau est agrandi"
+requires-python = ">=3.9"
+# smartos-konsole (le moteur de terminal) n'est PAS une dependance pip : les paquets sont
+# installes cote a cote par install_spyder_plugin.py, sans resolveur — le venv fige de
+# Spyder n'a pas setuptools. Le lien est un simple import, et l'installateur du greffon
+# pose le moteur en prerequis s'il manque.
+#
+# ⚠ EN REVANCHE, PLUS AUCUN LIEN ENTRE LES DEUX GREFFONS depuis le 31/07/2026 : ni
+# heritage, ni import. Ils ne partagent que le moteur, jamais l'affichage — c'est
+# precisement ce que l'utilisateur veut voir diverger.
+dependencies = ["qtpy", "qtawesome"]
+
+# Le nom du point d'entree DOIT etre identique a l'attribut NAME de la classe, sinon
+# Spyder leve une SpyderAPIError et ignore le greffon en silence.
+[project.entry-points."spyder.plugins"]
+claude_pane = "spyder_claude.spyder.plugin:GreffonClaude"
+
+[tool.setuptools.packages.find]
+include = ["spyder_claude*"]
