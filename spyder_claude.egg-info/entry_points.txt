@@ -1,0 +1,2 @@
+[spyder.plugins]
+claude_pane = spyder_claude.spyder.plugin:GreffonClaude
