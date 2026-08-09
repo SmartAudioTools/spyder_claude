@@ -6,7 +6,7 @@ GREFFON INDEPENDANT DU GREFFON TERMINAL. Une premiere version le faisait heriter
 le repertoire courant de Spyder, et la fermer proprement a la sortie. L'utilisateur l'a
 refuse le 31/07/2026 : « je veux 2 greffons independants », la ressemblance d'aujourd'hui
 n'engageant en rien celle de demain. Ce fichier est donc jumeau de
-spyder_native_terminal/spyder/plugin.py, et libre d'en diverger.
+spyder_konsole/spyder/plugin.py, et libre d'en diverger.
 
 CE QU'IL FAUT SAVOIR AVANT DE LE MODIFIER : le comportement des instances Claude (fond
 colore par etat, titre, arbitrage du clavier) n'est PAS implemente ici. Il vient des hooks

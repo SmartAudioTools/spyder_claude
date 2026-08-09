@@ -21,7 +21,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from qtpy.QtWidgets import QApplication  # noqa: E402
 
-from smartos_konsole import konsole_view  # noqa: E402
+from spyder_konsole import konsole_view  # noqa: E402
 
 from spyder_claude import etat_instances  # noqa: E402
 

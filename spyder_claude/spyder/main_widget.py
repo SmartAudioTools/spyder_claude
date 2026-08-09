@@ -11,11 +11,12 @@ surcharge — et faisait qu'une correction du Terminal changeait Claude sans qu'
 demande. Les deux arbres sont donc jumeaux et separes.
 
 ⚠ CE QUI EST JUMEAU, ET CE QUI NE L'EST PAS. Ce fichier et
-spyder_native_terminal/spyder/main_widget.py sont jumeaux : un defaut trouve ici est
+spyder_konsole/spyder/main_widget.py sont jumeaux : un defaut trouve ici est
 probablement la-bas, et tant qu'ils n'ont pas diverge un correctif se porte des deux cotes.
 C'est le prix assume de l'independance, pas un oubli. Le MOTEUR de terminal, lui, echappe a
-cette regle : il a ete sorti des deux greffons le meme jour, dans `smartos_konsole`, sur
-decision de l'utilisateur — il n'en existe qu'un exemplaire, et le corriger suffit. La
+cette regle : sorti des deux greffons le 31/07/2026 (paquet smartos_konsole), puis rapatrie
+dans spyder_konsole (konsole_view.py) le 09/08/2026 sur decision de l'utilisateur —
+ce greffon-ci le tire en dependance pip. Il n'en existe qu'un exemplaire, le corriger suffit. La
 frontiere est nette : ici l'AFFICHAGE, qui a vocation a diverger ; la-bas le TERMINAL, qui
 n'en a aucune.
 
@@ -74,8 +75,8 @@ from spyder.api.widgets.main_widget import PluginMainWidget
 from spyder.utils.icon_manager import ima
 
 from spyder_claude import etat_instances, usage
-from smartos_konsole import konsole_view
-from smartos_konsole.konsole_view import VueKonsole
+from spyder_konsole import konsole_view
+from spyder_konsole.konsole_view import VueKonsole
 from spyder_claude.compteurs import BandeauUsage
 from spyder_claude.mosaique import Mosaique
 from spyder_claude.spyder.onglet_compteur import CoinDOnglet
@@ -859,7 +860,7 @@ class PanneauClaude(PluginMainWidget):
         ses boutons n'ont plus de geometrie a jour.
 
         ⚠ LECTURE DIRECTE PAR `tabButton`, PAS PAR GEOMETRIE — DIVERGENCE DELIBEREE d'avec
-        le panneau jumeau spyder_native_terminal (qui n'a pas de tachymetre : SON
+        le panneau jumeau spyder_konsole (qui n'a pas de tachymetre : SON
         heuristique par geometrie reste correcte, et n'a PAS a etre corrigee la-bas). Une
         premiere version cherchait la croix par geometrie
         (`rect.contains(bouton.geometry().center())`) : une fois la croix reparentee DANS
@@ -1087,9 +1088,8 @@ class PanneauClaude(PluginMainWidget):
             return
         self._etat_vide(
             _("Le moteur de Konsole n'est pas construit sur cette machine.\n\n"
-              "Lancer le script qtermwidget_binding/build.sh du paquet smartos_konsole "
-              "(Commun/qtermwidget_binding/ dans le dépôt SmartOS), puis rouvrir "
-              "Spyder."),
+              "Lancer le script qtermwidget_binding/build.sh du dépôt "
+              "spyder_konsole, puis rouvrir Spyder."),
             titre=_("Claude indisponible"))
 
     def nombre_de_sessions(self):

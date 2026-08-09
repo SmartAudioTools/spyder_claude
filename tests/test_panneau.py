@@ -21,7 +21,7 @@ se voyait a l'ecran :
 
 Les trois sont invisibles a l'oeil et evidents ici. C'est la raison d'etre du fichier.
 
-JUMEAU DE spyder_native_terminal/tests/test_panneau.py, comme les deux greffons le sont
+JUMEAU DE spyder_konsole/tests/test_panneau.py, comme les deux greffons le sont
 depuis le 31/07/2026 — a une classe pres, TestRegistreDetat, qui n'a pas d'equivalent
 la-bas : lire le registre de claude-window.sh est precisement ce que ce panneau ajoute a un
 panneau de terminaux ordinaire.

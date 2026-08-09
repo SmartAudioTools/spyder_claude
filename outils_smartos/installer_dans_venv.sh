@@ -59,15 +59,22 @@ fi
 echo "Environnement Spyder cible : $SPYDER_PYTHON"
 
 # --- Prerequis : le moteur de terminal partage -------------------------------
-# smartos_konsole n'est pas un greffon mais une BIBLIOTHEQUE, importee par les deux
+# Le moteur Konsole n'est pas un greffon mais une BIBLIOTHEQUE, importee par les deux
 # panneaux a terminaux. Le prerequis est donc SYMETRIQUE — aucun greffon ne depend de
 # l'autre — la ou le greffon Claude dependait autrefois du greffon Terminal.
+# Depuis le 09/08/2026 le moteur vit dans le greffon Terminal (spyder_konsole,
+# dependance pip de ce greffon-ci - fusion du paquet smartos_konsole sur decision
+# utilisateur) : le prerequis est donc ce greffon-la, et son installateur porte toute la
+# logique du binding (prerequis pacman, alignement PySide6/Qt systeme, build.sh).
+# La condition porte sur l'ETAT FINAL (moteur importable ET binding construit), pas sur le
+# seul import : conditionne a l'import, un moteur installe SANS binding restait
+# definitivement en l'etat (constate le 08/08/2026 au soir).
 echo
-echo "--- Prerequis : moteur de terminal Konsole ---"
-if ! "$SPYDER_PYTHON" -c "import smartos_konsole" 2>/dev/null; then
-  echo "Moteur Konsole absent : installation prealable." >&2
-  bash "$(dirname "$PLUGIN_DIR")/smartos_konsole/outils_smartos/installer_dans_venv.sh" "$SPYDER_PYTHON" "$SANS_TESTS" "$OUTIL_INSTALL" "$OUTIL_CONFIG" "$SPYDER_INI" || {
-    echo "ERREUR : le moteur Konsole n'a pas pu etre installe." >&2
+echo "--- Prerequis : greffon Terminal natif (porte le moteur Konsole) ---"
+if ! QT_QPA_PLATFORM=offscreen "$SPYDER_PYTHON" -c \
+     "import qtermwidget; import spyder_konsole.konsole_view" 2>/dev/null; then
+  bash "$(dirname "$PLUGIN_DIR")/spyder_konsole/outils_smartos/installer_dans_venv.sh" "$SPYDER_PYTHON" "$SANS_TESTS" "$OUTIL_INSTALL" "$OUTIL_CONFIG" "$SPYDER_INI" || {
+    echo "ERREUR : le greffon Terminal natif (moteur Konsole) n'a pas pu etre installe." >&2
     echo "         Le panneau n'a alors ni terminal ni shell." >&2
     exit 1; }
 fi
@@ -135,22 +142,23 @@ import qtawesome as qta
 assert not qta.icon('mdi.robot-outline').isNull()
 assert not qta.icon('mdi.circle-medium').isNull()
 
-# L'INDEPENDANCE ELLE-MEME SE VERIFIE ICI, et c'est le seul endroit ou elle se verrait
-# rompre : un import vers l'autre greffon reviendrait sans bruit a la premiere reprise de
-# code entre les deux fichiers jumeaux, et ne se remarquerait que le jour ou l'on
-# installerait Claude seul.
+# L'INDEPENDANCE DES AFFICHAGES SE VERIFIE ICI, et c'est le seul endroit ou elle se
+# verrait rompre : une reprise de code entre les deux PANNEAUX jumeaux reviendrait sans
+# bruit. Depuis le 09/08/2026 la frontiere est le panneau, pas le paquet : le MOTEUR
+# (spyder_konsole.konsole_view) est une dependance assumee, mais aucun module
+# d'affichage de l'autre greffon (spyder_konsole.spyder.*) ne doit etre tire.
 import sys
-assert not [m for m in sys.modules if m.startswith('spyder_native_terminal')], \
-    'le greffon Claude ne doit dependre d\'aucun autre greffon'
+assert not [m for m in sys.modules if m.startswith('spyder_konsole.spyder')], \
+    'le greffon Claude ne doit pas importer le panneau du greffon Terminal'
 
-from smartos_konsole.konsole_view import VueKonsole, preparer_schema
+from spyder_konsole.konsole_view import VueKonsole, preparer_schema
 assert hasattr(VueKonsole, 'appliquer_schema')
 import inspect
 assert 'nom_derive' in inspect.signature(preparer_schema).parameters
 from spyder_claude.spyder.main_widget import PanneauClaude
 assert 'environnement' in inspect.signature(PanneauClaude.ouvrir_terminal).parameters
 
-from smartos_konsole.konsole_view import DISPONIBLE
+from spyder_konsole.konsole_view import DISPONIBLE
 print('OK  greffon Claude chargeable ; moteur Konsole :',
       'present' if DISPONIBLE else 'ABSENT (binding a construire)')
 " || { echo "ERREUR : le greffon ne se charge pas - installation annulee." >&2; exit 1; }

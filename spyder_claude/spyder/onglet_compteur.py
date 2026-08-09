@@ -29,7 +29,7 @@ deja reparente ailleurs, Qt garde sa propre reference et le masque quand meme), 
 `adopter_la_croix` qui reparente et reaffiche. Dans l'autre ordre, la croix disparaitrait
 a l'interieur d'un conteneur pas encore installe.
 
-⚠ DIVERGENCE DELIBEREE D'AVEC LE PANNEAU JUMEAU `spyder_native_terminal` : lui n'a pas de
+⚠ DIVERGENCE DELIBEREE D'AVEC LE PANNEAU JUMEAU `spyder_konsole` : lui n'a pas de
 tachymetre, et son heuristique de reperage de la croix par GEOMETRIE
 (`_relever_la_croix_dun_onglet`, dans main_widget.py) reste donc correcte pour lui. Un
 defaut trouve ici n'a PAS a etre porte la-bas.
