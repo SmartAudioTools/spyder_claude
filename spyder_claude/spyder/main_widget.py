@@ -67,7 +67,8 @@ import qtawesome as qta
 
 from qtpy.QtCore import QEvent, Qt, QTimer, Signal
 from qtpy.QtGui import QIcon
-from qtpy.QtWidgets import QApplication, QLabel, QPushButton, QTabBar, QVBoxLayout
+from qtpy.QtWidgets import (QApplication, QGraphicsOpacityEffect, QLabel, QPushButton,
+                            QTabBar, QVBoxLayout)
 
 from spyder.widgets.tabs import Tabs
 
@@ -144,6 +145,8 @@ class PanneauClaude(PluginMainWidget):
         #: la surveillance « le selecteur est-il referme ? » armee par un clic sur ce
         #: bouton, par vue : [minuteur, duree ecoulee en ms].
         self._relances = {}
+        #: le minuteur de silence qui leve le voile de lancement, par vue (cf. _lancer).
+        self._calmes = {}
         self._minuteur = None
         self._en_mosaique = False
         self._agrandi = False
@@ -1006,12 +1009,13 @@ class PanneauClaude(PluginMainWidget):
         self._identifiants[vue] = identifiant
 
         vue.sig_titre.connect(lambda texte, v=vue: self._titre_change(v, texte))
+        vue.sig_sortie.connect(lambda v=vue: self._relancer_calme(v))
         vue.sig_termine.connect(lambda code, v=vue: self._session_terminee(v, code))
         import time
         self._debut_derniere_session = time.monotonic()
         vue.demarrer(commande=commande, repertoire=repertoire,
                      environnement=variables)
-        vue.envoyer(self.commande_claude() + "\n")
+        self._lancer(vue, self.commande_claude())
         self._poser_bandeau(vue)
         vue.setFocus()
         self._ajuster_affichage()
@@ -1059,11 +1063,75 @@ class PanneauClaude(PluginMainWidget):
         vue.layout().insertWidget(0, bouton)
         self._bandeaux[vue] = bouton
 
+    #: Plafond du voile de lancement, en ms : au-dela, le terminal se montre quand meme
+    #: (Claude absent ou en erreur : son message doit se voir).
+    PLAFOND_VOILE = 10000
+    #: Silence de sortie, en ms, qui dit « Claude a fini de dessiner ». Mesure du
+    #: 04/10/2026 : pendant « Loading conversations… » l'animation ecrit toutes les
+    #: ~130 ms ; la liste dessinee, plus rien.
+    DELAI_CALME = 250
+
+    def _lancer(self, vue, commande):
+        """Tape `commande` dans le shell, la vue voilee jusqu'a ce que Claude s'affiche.
+
+        Demande de l'utilisateur (04/10/2026) : ne pas montrer le terminal avant que
+        Claude n'affiche ce qu'il veut. `clear` devant : mesure du meme jour (pty,
+        2.1.289), Claude n'efface pas l'ecran et ne passe pas en ecran alternatif —
+        l'invite du shell et la ligne tapee resteraient au-dessus du selecteur.
+
+        Le titre ne suffit pas a lever le voile : il arrive AVANT la liste (capture du
+        meme jour : « Loading conversations… » a l'ecran). Il arme donc un minuteur que
+        chaque sortie relance ; le voile se leve apres DELAI_CALME de silence.
+        """
+        if vue not in self._calmes:      # deja voilee par le bouton « Nouvelle session »
+            self._voiler(vue)
+        vue.envoyer("clear; " + commande + "\n")
+
+    @staticmethod
+    def _ecran(vue):
+        """Le terminal de la vue, dernier widget de son layout (le bouton est au-dessus).
+
+        C'est lui qu'on voile, pas la vue : le cadre du panneau est la bordure de la vue
+        (feuille de style de VueKonsole), et il disparaissait avec elle (retour de
+        l'utilisateur, 04/10/2026).
+        """
+        disposition = vue.layout()
+        return disposition.itemAt(disposition.count() - 1).widget()
+
+    def _voiler(self, vue):
+        ecran = self._ecran(vue)
+        effet = QGraphicsOpacityEffect(ecran)
+        effet.setOpacity(0)
+        ecran.setGraphicsEffect(effet)
+        calme = QTimer(self)
+        calme.setSingleShot(True)
+        calme.setInterval(self.DELAI_CALME)
+        calme.timeout.connect(lambda v=vue: self._lever_voile(v))
+        self._calmes[vue] = calme
+        QTimer.singleShot(self.PLAFOND_VOILE, lambda v=vue: self._lever_voile(v))
+
+    def _relancer_calme(self, vue):
+        """Une sortie : si le minuteur est arme (titre de Claude recu), il repart."""
+        calme = self._calmes.get(vue)
+        if calme is not None and calme.isActive():
+            calme.start()
+
+    def _lever_voile(self, vue):
+        calme = self._calmes.pop(vue, None)
+        if calme is not None:
+            calme.stop()
+            calme.deleteLater()
+        try:
+            self._ecran(vue).setGraphicsEffect(None)
+        except RuntimeError:      # vue deja detruite quand le plafond tombe
+            pass
+
     #: Titre (OSC) que pose le selecteur `claude -r` tant qu'il est ouvert (2.1.289).
     TITRE_SELECTEUR = "claude · resume"
 
     def _suivre_titre(self, vue, texte):
-        """Retire le bouton quand une session demarre dans ce terminal.
+        """Arme la levee du voile des que Claude pose un titre ; retire le bouton
+        quand une session demarre dans ce terminal.
 
         Mesure du 04/10/2026 (pty, `claude -r` 2.1.289) : le selecteur pose le titre
         TITRE_SELECTEUR ; une session choisie - au clavier comme a la souris - en pose un
@@ -1071,10 +1139,13 @@ class PanneauClaude(PluginMainWidget):
         toujours au premier plan, dit donc « une session a demarre ». Un titre venu du
         shell (premier plan = shell) n'est pas une session : le bouton reste.
         """
-        if vue not in self._bandeaux or texte == self.TITRE_SELECTEUR:
-            return
         pid_shell = vue.pid_shell()
-        if pid_shell > 0 and vue.pid_premier_plan() != pid_shell:
+        if pid_shell <= 0 or vue.pid_premier_plan() == pid_shell:
+            return
+        calme = self._calmes.get(vue)
+        if calme is not None:
+            calme.start()
+        if texte != self.TITRE_SELECTEUR:
             self._retirer_bandeau(vue)
 
     def _retirer_bandeau(self, vue):
@@ -1092,6 +1163,9 @@ class PanneauClaude(PluginMainWidget):
         selecteur encore ouvert partirait dans son champ de recherche.
         """
         self._retirer_bandeau(vue)
+        # Voile des le clic : Echap rend le shell, et son invite se verrait jusqu'a la
+        # relance (retour de l'utilisateur, 04/10/2026).
+        self._voiler(vue)
         vue.envoyer("\x1b")
         minuteur = QTimer(self)
         minuteur.setInterval(self.PERIODE_RELANCE)
@@ -1111,7 +1185,7 @@ class PanneauClaude(PluginMainWidget):
         pid_shell = vue.pid_shell()
         if pid_shell > 0 and vue.pid_premier_plan() == pid_shell:
             self._arreter_relance(vue)
-            vue.envoyer(self._commande_nouvelle_session() + "\n")
+            self._lancer(vue, self._commande_nouvelle_session())
             vue.setFocus()
             return
         suivi[1] += self.PERIODE_RELANCE

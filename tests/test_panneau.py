@@ -49,7 +49,7 @@ import warnings
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from qtpy.QtCore import QEvent, QPointF  # noqa: E402
+from qtpy.QtCore import QEvent, QPointF, Signal  # noqa: E402
 from qtpy.QtGui import QEnterEvent  # noqa: E402
 from qtpy.QtWidgets import QApplication, QTabBar, QVBoxLayout, QWidget  # noqa: E402
 
@@ -79,6 +79,8 @@ class Banc(PanneauClaude):
 
 class FausseVue(QWidget):
     """Ce que le panneau attend d'une vue, et rien de plus."""
+
+    sig_sortie = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -340,11 +342,14 @@ class TestBandeauNouvelleSession(unittest.TestCase):
         self.p._bandeaux[vue].click()
         self.assertNotIn(vue, self.p._bandeaux)   # disparu des le clic
         self.assertEqual(vue.envois, ["\x1b"])    # Echap envoye, rien d'autre
+        self.assertIsNotNone(self.p._ecran(vue).graphicsEffect())  # voilee des le clic : l'invite
+        calme = self.p._calmes[vue]                 # du shell ne se voit pas
         self.p._relancer_si_prete(vue)            # battement : selecteur encore la
         self.assertEqual(vue.envois, ["\x1b"])
         vue.pids = (42, 42)                       # le shell est revenu
         self.p._relancer_si_prete(vue)
-        self.assertEqual(vue.envois, ["\x1b", "claude\n"])
+        self.assertEqual(vue.envois, ["\x1b", "clear; claude\n"])
+        self.assertIs(self.p._calmes[vue], calme)   # le meme voile, pas un second
         self.assertNotIn(vue, self.p._relances)
 
     def test_la_relance_abandonne_au_plafond(self):
@@ -371,6 +376,29 @@ class TestBandeauNouvelleSession(unittest.TestCase):
         self.assertIn(vue, self.p._bandeaux)      # le selecteur est encore ouvert
         self.p._titre_change(vue, "\u2733 Claude Code")
         self.assertNotIn(vue, self.p._bandeaux)
+
+    def test_le_terminal_reste_voile_jusquau_titre_de_claude(self):
+        """Demande du 04/10/2026 : rien du terminal avant que Claude ne s'affiche."""
+        vue = self._session()
+        self.p._lancer(vue, "claude -r")
+        self.assertIsNone(vue.graphicsEffect())   # le cadre (bordure de la vue) reste
+        self.assertEqual(vue.envois, ["clear; claude -r\n"])
+        self.assertIsNotNone(self.p._ecran(vue).graphicsEffect())
+        self.p._titre_change(vue, "zsh")          # titre du shell : voile maintenu
+        vue.sig_sortie.emit()                     # sortie avant le titre : n'arme rien
+        self.assertFalse(self.p._calmes[vue].isActive())
+        vue.pids = (42, 77)                       # Claude au premier plan
+        self.p._titre_change(vue, self.p.TITRE_SELECTEUR)
+        # Le titre precede la liste (« Loading conversations… ») : voile maintenu,
+        # jusqu'a DELAI_CALME de silence.
+        self.assertIsNotNone(self.p._ecran(vue).graphicsEffect())
+        self.assertTrue(self.p._calmes[vue].isActive())
+        limite = time.monotonic() + 5
+        while self.p._ecran(vue).graphicsEffect() is not None and time.monotonic() < limite:
+            QApplication.processEvents()
+            time.sleep(0.01)
+        self.assertIsNone(self.p._ecran(vue).graphicsEffect())
+        self.assertNotIn(vue, self.p._calmes)
 
     def test_un_titre_du_shell_garde_le_bouton(self):
         """Un titre pose alors que le shell est au premier plan (avant le selecteur,
