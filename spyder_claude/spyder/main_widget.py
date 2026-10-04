@@ -99,10 +99,10 @@ class PanneauClaude(PluginMainWidget):
 
     #: Dollars/heure a partir desquels le tachymetre d'une conversation est a fond.
     #: Reglable par l'option `vitesse_maximale` de la section de configuration du
-    #: greffon. PROVISOIRE : pose avant d'avoir ete mesuree sur un vrai poste (a corriger
-    #: une fois une session reelle donnee — cout_total_usd / heures ecoulees — cf.
-    #: l'entree DONE de ce travail).
-    VITESSE_MAXIMALE_DEFAUT = 6.0
+    #: greffon. Mesure du 04/10/2026 sur 14 conversations actives (fichiers usage-*) :
+    #: 11 a 53 $/h, mediane ~24 $/h. Les 6 $/h poses avant toute mesure saturaient le
+    #: cadran des la premiere question ; 50 $/h laisse une question ordinaire a mi-course.
+    VITESSE_MAXIMALE_DEFAUT = 50.0
 
     #: Periode de relecture du registre d'etat, en millisecondes. Une demi-seconde : le
     #: hook, lui, ecrit puis arbitre en ~0,5 s (appels D-Bus + journalctl), donc sonder

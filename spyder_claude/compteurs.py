@@ -152,9 +152,9 @@ class Compteur(QWidget):
         self.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
         #: Centimes/heure, ou None = non mesurable.
         self._valeur = None
-        #: Centimes/heure. 600 = 6,00 $/h, repli avant que le panneau ne pose la vraie
+        #: Centimes/heure. 5000 = 50 $/h, repli avant que le panneau ne pose la vraie
         #: valeur de get_conf("vitesse_maximale").
-        self._pleine_echelle = 600.0
+        self._pleine_echelle = 5000.0
 
     def poser_valeur(self, valeur):
         """`valeur` en centimes/heure, ou None. Ne repeint que si la valeur a change."""
