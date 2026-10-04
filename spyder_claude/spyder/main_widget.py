@@ -67,8 +67,8 @@ import qtawesome as qta
 
 from qtpy.QtCore import QEvent, Qt, QTimer, Signal
 from qtpy.QtGui import QIcon
-from qtpy.QtWidgets import (QApplication, QGraphicsOpacityEffect, QLabel, QPushButton,
-                            QTabBar, QVBoxLayout)
+from qtpy.QtWidgets import (QApplication, QGraphicsOpacityEffect, QHBoxLayout, QLabel,
+                            QPushButton, QTabBar, QVBoxLayout, QWidget)
 
 from spyder.widgets.tabs import Tabs
 
@@ -139,11 +139,11 @@ class PanneauClaude(PluginMainWidget):
         self._dernieres_fenetres = None
         #: le CoinDOnglet greffe sur chaque onglet, par vue — cf. _greffer_le_compteur.
         self._coins = {}
-        #: le bouton « Nouvelle session » pose au-dessus du selecteur `claude -r`,
+        #: le bandeau de nouvelle session pose au-dessus du selecteur `claude -r`,
         #: par vue — retire des qu'une session reelle existe (cf. _poser_bandeau).
         self._bandeaux = {}
-        #: la surveillance « le selecteur est-il referme ? » armee par un clic sur ce
-        #: bouton, par vue : [minuteur, duree ecoulee en ms].
+        #: la surveillance « le selecteur est-il referme ? » armee par un clic sur un
+        #: de ses boutons, par vue : [minuteur, duree ecoulee en ms, options de la commande].
         self._relances = {}
         #: le minuteur de silence qui leve le voile de lancement, par vue (cf. _lancer).
         self._calmes = {}
@@ -608,7 +608,7 @@ class PanneauClaude(PluginMainWidget):
         self._identifiants.pop(vue, None)
         self._etats.pop(vue, None)
         self._dernieres_vitesses.pop(vue, None)
-        # Le bouton « Nouvelle session » est enfant de la vue, detruit avec elle : seul
+        # Le bandeau de nouvelle session est enfant de la vue, detruit avec elle : seul
         # le dictionnaire se purge. Le minuteur de relance, lui, a le panneau pour
         # parent — on l'arrete explicitement.
         self._bandeaux.pop(vue, None)
@@ -1030,38 +1030,55 @@ class PanneauClaude(PluginMainWidget):
         """Vrai si la commande tapee a l'ouverture est le selecteur de sessions."""
         return bool({"-r", "--resume"} & set(self.commande_claude().split()))
 
-    def _commande_nouvelle_session(self):
+    #: Les boutons du bandeau : (libelle, options ajoutees a la commande). Demande de
+    #: l'utilisateur (04/10/2026) : « des boutons "nouvelle session" pour plusieurs types
+    #: de roles/models ». Le superviseur est celui que decrit le CLAUDE.md du depot
+    #: (SmartTeacher, « Supervision facultative ») : une session NOMMEE « Superviseur » a
+    #: qui l'utilisateur dit « supervise » — le bouton fait exactement ces deux gestes.
+    NOUVELLES_SESSIONS = (
+        ("Nouveau superviseur Fable", "--model claude-fable-5-1 -n Superviseur supervise"),
+        ("Nouveau worker Fable", "--model claude-fable-5-1"),
+        ("Nouveau worker Opus", "--model claude-opus-5-5"),
+    )
+
+    def _commande_nouvelle_session(self, options):
         """La commande configuree, sans son option de reprise : une session neuve."""
         mots = [m for m in self.commande_claude().split()
-                if m not in ("-r", "--resume")]
-        return " ".join(mots) or "claude"
+                if m not in ("-r", "--resume")] or ["claude"]
+        return " ".join(mots + options.split())
 
     def _poser_bandeau(self, vue):
-        """Le bouton « Nouvelle session », en pleine largeur au-dessus du terminal.
+        """Les boutons de nouvelle session, en pleine largeur au-dessus du terminal.
 
         Demande de l'utilisateur (04/10/2026) : l'onglet s'ouvre sur `claude -r` pour
         montrer d'emblee les sessions reprenables, mais ce selecteur n'a aucune entree
-        « nouvelle session » (verifie dans la doc officielle de Claude Code). Le bouton
+        « nouvelle session » (verifie dans la doc officielle de Claude Code). Le bandeau
         comble ce manque, et disparait des qu'une session existe — choisie dans le
-        selecteur ou ouverte par le bouton lui-meme.
+        selecteur ou ouverte par l'un de ses boutons.
 
         « Choisie dans le selecteur » se lit au titre du terminal : voir `_suivre_titre`.
         Le retrait tenait d'abord au registre de claude-window.sh : jamais ecrit sur le
         compte isole claude, qui fait tourner les sessions du panneau sans ce hook — le
-        bouton ne disparaissait pas (defaut du 04/10/2026).
+        bandeau ne disparaissait pas (defaut du 04/10/2026).
 
         Insere DANS la vue (son layout vertical, au-dessus du terminal), pas dans le
         panneau : le terminal se reduit d'autant, et onglets comme mosaique deplacent la
-        vue avec son bouton sans rien savoir de lui. Rien n'est pose si la commande
+        vue avec son bandeau sans rien savoir de lui. Rien n'est pose si la commande
         configuree n'est pas le selecteur : Echap partirait alors dans une session en
         cours.
         """
         if not self._commande_est_le_selecteur():
             return
-        bouton = QPushButton(_("Nouvelle session"), vue)
-        bouton.clicked.connect(lambda checked=False, v=vue: self._nouvelle_session(v))
-        vue.layout().insertWidget(0, bouton)
-        self._bandeaux[vue] = bouton
+        bandeau = QWidget(vue)
+        ligne = QHBoxLayout(bandeau)
+        ligne.setContentsMargins(0, 0, 0, 0)
+        for libelle, options in self.NOUVELLES_SESSIONS:
+            bouton = QPushButton(_(libelle), bandeau)
+            bouton.clicked.connect(
+                lambda checked=False, v=vue, o=options: self._nouvelle_session(v, o))
+            ligne.addWidget(bouton)
+        vue.layout().insertWidget(0, bandeau)
+        self._bandeaux[vue] = bandeau
 
     #: Plafond du voile de lancement, en ms : au-dela, le terminal se montre quand meme
     #: (Claude absent ou en erreur : son message doit se voir).
@@ -1083,7 +1100,7 @@ class PanneauClaude(PluginMainWidget):
         meme jour : « Loading conversations… » a l'ecran). Il arme donc un minuteur que
         chaque sortie relance ; le voile se leve apres DELAI_CALME de silence.
         """
-        if vue not in self._calmes:      # deja voilee par le bouton « Nouvelle session »
+        if vue not in self._calmes:      # deja voilee par un bouton de nouvelle session
             self._voiler(vue)
         vue.envoyer("clear; " + commande + "\n")
 
@@ -1149,13 +1166,13 @@ class PanneauClaude(PluginMainWidget):
             self._retirer_bandeau(vue)
 
     def _retirer_bandeau(self, vue):
-        bouton = self._bandeaux.pop(vue, None)
-        if bouton is not None:
-            bouton.setParent(None)   # sort du layout (et cache) tout de suite
-            bouton.deleteLater()
+        bandeau = self._bandeaux.pop(vue, None)
+        if bandeau is not None:
+            bandeau.setParent(None)  # sort du layout (et cache) tout de suite
+            bandeau.deleteLater()
 
-    def _nouvelle_session(self, vue):
-        """Clic sur « Nouvelle session » : quitter le selecteur, puis lancer `claude`.
+    def _nouvelle_session(self, vue, options=""):
+        """Clic sur un bouton de nouvelle session : quitter le selecteur, puis lancer `claude`.
 
         Echap referme le selecteur et rend le shell ; on ne tape la commande qu'une fois
         le shell REELLEMENT revenu au premier plan du pty (etat reel, pas de delai fixe),
@@ -1170,7 +1187,7 @@ class PanneauClaude(PluginMainWidget):
         minuteur = QTimer(self)
         minuteur.setInterval(self.PERIODE_RELANCE)
         minuteur.timeout.connect(lambda v=vue: self._relancer_si_prete(v))
-        self._relances[vue] = [minuteur, 0]
+        self._relances[vue] = [minuteur, 0, options]
         minuteur.start()
 
     def _relancer_si_prete(self, vue):
@@ -1185,7 +1202,7 @@ class PanneauClaude(PluginMainWidget):
         pid_shell = vue.pid_shell()
         if pid_shell > 0 and vue.pid_premier_plan() == pid_shell:
             self._arreter_relance(vue)
-            self._lancer(vue, self._commande_nouvelle_session())
+            self._lancer(vue, self._commande_nouvelle_session(suivi[2]))
             vue.setFocus()
             return
         suivi[1] += self.PERIODE_RELANCE
