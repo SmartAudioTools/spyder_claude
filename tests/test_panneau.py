@@ -346,6 +346,18 @@ class TestBandeauNouvelleSession(unittest.TestCase):
             self.assertEqual(haut.x(), bas.x())
             self.assertGreaterEqual(bas.y(), haut.y() + haut.height())
 
+    def test_le_bandeau_ne_mange_pas_la_hauteur_du_terminal(self):
+        """Retour du 04/10/2026 : boutons « super ecartes », la moitie de la fenetre, le
+        selecteur relegue en bas. Le bandeau partageait l'espace libre avec le terminal."""
+        vue = self._session()
+        self.p._poser_bandeau(vue)
+        self.p.resize(600, 900)
+        self.p.show()
+        self.p._onglets.setCurrentWidget(vue)
+        QApplication.processEvents()
+        bandeau = self.p._bandeaux[vue]
+        self.assertLessEqual(bandeau.height(), bandeau.sizeHint().height())
+
     def test_chaque_bouton_lance_son_role_et_son_modele(self):
         """Demande du 04/10/2026 : « Nouveau Superviseur Fable », « Nouveau worker
         Fable », « Nouveau worker Opus ». Le superviseur est la session NOMMEE

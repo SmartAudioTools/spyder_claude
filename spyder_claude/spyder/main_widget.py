@@ -68,7 +68,7 @@ import qtawesome as qta
 from qtpy.QtCore import QEvent, Qt, QTimer, Signal
 from qtpy.QtGui import QIcon
 from qtpy.QtWidgets import (QApplication, QGraphicsOpacityEffect, QLabel, QPushButton,
-                            QTabBar, QVBoxLayout, QWidget)
+                            QSizePolicy, QTabBar, QVBoxLayout, QWidget)
 
 from spyder.widgets.tabs import Tabs
 
@@ -1101,6 +1101,10 @@ class PanneauClaude(PluginMainWidget):
             bouton.clicked.connect(
                 lambda checked=False, v=vue, o=options: self._nouvelle_session(v, o))
             pile.addWidget(bouton)
+        # Hauteur naturelle, jamais plus : un QWidget nu est « Preferred », il partageait
+        # l'espace libre avec le terminal et ecartait les boutons sur la moitie de la vue,
+        # le selecteur relegue en bas (retour de l'utilisateur, 04/10/2026).
+        bandeau.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
         vue.layout().insertWidget(0, bandeau)
         self._bandeaux[vue] = bandeau
 
