@@ -8,8 +8,8 @@
 # avec un pty reel) et pour l'onglet Spyder (SPYDER_CLAUDE_PANE lu dans /proc).
 #
 # MEMES PRECAUTIONS que tests/test_hook_panneau.sh :
-#   1. XDG_RUNTIME_DIR est deplace : le fichier ecrit est un faux, jamais celui de
-#      l'utilisateur ;
+#   1. XDG_RUNTIME_DIR est deplace ET CLAUDE_REGISTRE retire (il prime sur XDG_RUNTIME_DIR :
+#      present dans l'environnement, il faisait ecrire les faux dans le VRAI registre) ;
 #   2. le script est lance a travers `script`, qui lui donne un VRAI pty - sans quoi la
 #      marche des ancetres echouerait des la premiere etape et rien ne serait ecrit ;
 #   3. deux appels qui doivent partager la MEME ancre (le calcul de vitesse) sont lances
@@ -83,6 +83,8 @@ JSON
 # Lance $SCRIPT (une ou plusieurs fois, meme session `script` pour partager l'ancetre) avec
 # stdin redirige depuis chaque fichier donne, chaque sortie et l'etat du registre apres
 # chaque appel captures separement.
+unset CLAUDE_REGISTRE
+
 jouer() {
 	local pane="$1"; shift
 	rm -rf "$TEMP/run"; mkdir -p "$TEMP/run"
