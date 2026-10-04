@@ -1039,8 +1039,12 @@ class PanneauClaude(PluginMainWidget):
         montrer d'emblee les sessions reprenables, mais ce selecteur n'a aucune entree
         « nouvelle session » (verifie dans la doc officielle de Claude Code). Le bouton
         comble ce manque, et disparait des qu'une session existe — choisie dans le
-        selecteur (le registre d'etat la revele, cf. relire_le_registre) ou ouverte par
-        le bouton lui-meme.
+        selecteur ou ouverte par le bouton lui-meme.
+
+        « Choisie dans le selecteur » se lit au titre du terminal : voir `_suivre_titre`.
+        Le retrait tenait d'abord au registre de claude-window.sh : jamais ecrit sur le
+        compte isole claude, qui fait tourner les sessions du panneau sans ce hook — le
+        bouton ne disparaissait pas (defaut du 04/10/2026).
 
         Insere DANS la vue (son layout vertical, au-dessus du terminal), pas dans le
         panneau : le terminal se reduit d'autant, et onglets comme mosaique deplacent la
@@ -1054,6 +1058,24 @@ class PanneauClaude(PluginMainWidget):
         bouton.clicked.connect(lambda checked=False, v=vue: self._nouvelle_session(v))
         vue.layout().insertWidget(0, bouton)
         self._bandeaux[vue] = bouton
+
+    #: Titre (OSC) que pose le selecteur `claude -r` tant qu'il est ouvert (2.1.289).
+    TITRE_SELECTEUR = "claude · resume"
+
+    def _suivre_titre(self, vue, texte):
+        """Retire le bouton quand une session demarre dans ce terminal.
+
+        Mesure du 04/10/2026 (pty, `claude -r` 2.1.289) : le selecteur pose le titre
+        TITRE_SELECTEUR ; une session choisie - au clavier comme a la souris - en pose un
+        autre (« ✳ Claude Code ») ; Echap n'en pose AUCUN. Un titre different, Claude
+        toujours au premier plan, dit donc « une session a demarre ». Un titre venu du
+        shell (premier plan = shell) n'est pas une session : le bouton reste.
+        """
+        if vue not in self._bandeaux or texte == self.TITRE_SELECTEUR:
+            return
+        pid_shell = vue.pid_shell()
+        if pid_shell > 0 and vue.pid_premier_plan() != pid_shell:
+            self._retirer_bandeau(vue)
 
     def _retirer_bandeau(self, vue):
         bouton = self._bandeaux.pop(vue, None)
@@ -1241,6 +1263,7 @@ class PanneauClaude(PluginMainWidget):
         """
         if not texte:
             return
+        self._suivre_titre(vue, texte)
         self._titres[vue] = texte
         index = self._onglets.indexOf(vue)
         if index >= 0:
@@ -1311,11 +1334,6 @@ class PanneauClaude(PluginMainWidget):
             if etat != self._etats.get(vue):
                 self._etats[vue] = etat
                 self._appliquer_etat(vue, etat)
-                # Une instance declaree dans le registre = une session reelle a demarre
-                # (choisie dans le selecteur `claude -r`, ou autrement) : le bouton
-                # « Nouvelle session » n'a plus de raison d'etre.
-                if etat is not None:
-                    self._retirer_bandeau(vue)
 
         cible = etat_instances.demande_de_focus()
         if cible:

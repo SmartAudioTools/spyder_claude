@@ -359,6 +359,28 @@ class TestBandeauNouvelleSession(unittest.TestCase):
         self.assertNotIn(vue, self.p._relances)
         self.assertEqual(vue.envois, ["\x1b"])
 
+    def test_une_session_choisie_retire_le_bouton(self):
+        """Defaut du 04/10/2026 : une session choisie dans l'historique laissait le
+        bouton en place (le retrait tenait au registre de claude-window.sh, absent du
+        compte isole claude). Le choix se fait au clavier OU a la souris : c'est le
+        titre que pose la session demarree qui le dit, pas la touche."""
+        vue = self._session()
+        self.p._poser_bandeau(vue)
+        vue.pids = (42, 77)                       # Claude au premier plan
+        self.p._titre_change(vue, self.p.TITRE_SELECTEUR)
+        self.assertIn(vue, self.p._bandeaux)      # le selecteur est encore ouvert
+        self.p._titre_change(vue, "\u2733 Claude Code")
+        self.assertNotIn(vue, self.p._bandeaux)
+
+    def test_un_titre_du_shell_garde_le_bouton(self):
+        """Un titre pose alors que le shell est au premier plan (avant le selecteur,
+        ou apres Echap) n'est pas une session : le bouton reste."""
+        vue = self._session()
+        self.p._poser_bandeau(vue)
+        vue.pids = (42, 42)
+        self.p._titre_change(vue, "zsh")
+        self.assertIn(vue, self.p._bandeaux)
+
     def test_oublier_purge_le_bouton_et_la_relance(self):
         """Un bouton ou un minuteur fantome viserait une vue detruite."""
         vue = self._session()
@@ -428,16 +450,6 @@ class TestRegistreDetat(unittest.TestCase):
         self._declarer("aaa", "waiting")
         self.p.relire_le_registre()
         self.assertEqual(self.p._etats.get(vue), "waiting")
-
-    def test_un_etat_declare_retire_le_bouton_nouvelle_session(self):
-        """Choisir une session dans le selecteur fait naitre l'instance dans le
-        registre : c'est CE signal qui retire le bouton « Nouvelle session »."""
-        vue = self._session("aaa")
-        self.p._poser_bandeau(vue)
-        self.assertIn(vue, self.p._bandeaux)
-        self._declarer("aaa", "busy")
-        self.p.relire_le_registre()
-        self.assertNotIn(vue, self.p._bandeaux)
 
     def test_relire_le_registre_ne_leve_pas_sur_un_registre_vide(self):
         """Cas courant : aucune instance declaree, et un battement toutes les demi-secondes."""
