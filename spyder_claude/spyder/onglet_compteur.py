@@ -17,7 +17,7 @@ CE QUE SPYDER FAIT DEJA, ET QUE CE GREFFON NE DOIT PAS CASSER (`TabBar`, tabs.py
     la reparente.
 
 CE QUE CE MODULE FAIT : remplace le widget `RightSide` par un petit conteneur
-[place du Compteur][croix d'origine] — le cadran lui-meme est pose par-dessus la barre, a
+[croix d'origine][place du Compteur] — le cadran lui-meme est pose par-dessus la barre, a
 cette place (cf. `CoinDOnglet.__init__`). La croix d'origine est REPARENTEE, pas recreee — sinon la
 connexion `sig_clicked -> tabCloseRequested` posee par Spyder a l'insertion serait perdue.
 Une fois reparentee, son `.parent()` devient CE conteneur, plus la barre : chaque appel
@@ -44,7 +44,7 @@ from spyder_claude.mosaique import TAILLE_COMPTEUR, dimensionner_compteur
 
 
 class CoinDOnglet(QWidget):
-    """[place du Compteur][croix], installe a la place du widget RightSide d'un onglet.
+    """[croix][place du Compteur], installe a la place du widget RightSide d'un onglet.
 
     Construit SANS croix (cf. `adopter_la_croix`) : voir le commentaire d'ordre de greffe
     ci-dessus, dans le module.
@@ -90,7 +90,9 @@ class CoinDOnglet(QWidget):
         """
         self._croix = croix
         croix.setFixedSize(self._taille_croix)  # sinon le layout l'etire a son sizeHint
-        self._disposition.addWidget(croix, 0, Qt.AlignVCenter)
+        # EN TETE, avant la place du cadran : la croix colle au titre (demande de
+        # l'utilisateur, 04/10/2026 : « a cote du titre, avant le tachymetre »).
+        self._disposition.insertWidget(0, croix, 0, Qt.AlignVCenter)
         croix.show()
 
     def sizeHint(self):  # noqa: N802 - API Qt
@@ -106,7 +108,8 @@ class CoinDOnglet(QWidget):
         cellule etant cale par construction, c'est lui la reference.
         """
         g = self.geometry()
-        self._compteur.move(g.x(), g.y() + (g.height() - self._compteur.height()) // 2 + 1)
+        x = g.x() + self._taille_croix.width() + self._disposition.spacing()
+        self._compteur.move(x, g.y() + (g.height() - self._compteur.height()) // 2 + 1)
         self._compteur.setVisible(self.isVisible())
         self._compteur.raise_()
 

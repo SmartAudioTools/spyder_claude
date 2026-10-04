@@ -166,26 +166,12 @@ class Cellule(QFrame):
         self._etiquette.setMinimumHeight(TAILLE_BOUTON)
         self._ligne_titre.addWidget(self._etiquette)
 
-        # LE TACHYMETRE DE LA CONVERSATION, ENTRE LE TITRE ET LA CROIX (demande de
-        # l'utilisateur, 31/07/2026 : « on placera entre le titre et la croix pour fermer
-        # une conversation »). Taille fixe et petite : c'est un cadran dessine en fraction
-        # de son propre canevas (cf. compteurs.Compteur), centre verticalement — pas une
-        # icone de bouton, qui se calerait en haut comme `poser_widget_de_titre` le fait
-        # pour les boutons du panneau (cf. AlignTop plus bas dans ce fichier).
-        # ⚠ POSSEDEE PAR LA CELLULE, contrairement aux boutons du panneau qui sont PRETES
-        # (poser_widget_de_titre / liberer) : ce cadran est propre a CETTE conversation, il
-        # n'a pas a survivre a la destruction de sa cellule. `Mosaique.liberer()` n'a donc
-        # rien de special a faire pour lui.
-        self._compteur = Compteur(self)
-        dimensionner_compteur(self._compteur)
-        self._ligne_titre.addWidget(self._compteur, 0, Qt.AlignVCenter)
-
         # LA CROIX DE FERMETURE, JUSTE A DROITE DU TITRE et sur sa ligne (demande de
         # l'utilisateur, 27/07/2026). Chaque cellule a la sienne : en mosaique il n'y a
         # plus d'onglet, donc plus la croix que l'onglet portait. C'est le SEUL bouton
         # propre a une cellule ; le « + » et la reduction, eux, valent pour tout le panneau,
         # ne sont poses que sur une cellule (cf. Mosaique.disposer) et vont a l'extreme
-        # droite — d'ou l'espace elastique pose apres la croix.
+        # droite — d'ou l'espace elastique pose apres la croix et le tachymetre.
         self._bouton_fermer = QToolButton(self)
         self._bouton_fermer.setIcon(
             self.style().standardIcon(QStyle.SP_TitleBarCloseButton))
@@ -205,6 +191,21 @@ class Cellule(QFrame):
         self._bouton_fermer.setToolTip("Fermer cette instance Claude")
         self._bouton_fermer.clicked.connect(self.sig_fermeture_demandee)
         self._ligne_titre.addWidget(self._bouton_fermer)
+
+        # LE TACHYMETRE DE LA CONVERSATION, APRES LA CROIX (place d'abord entre le titre
+        # et la croix, demande du 31/07/2026 ; deplace le 04/10/2026 : « la croix de
+        # fermeture [doit] etre a cote du titre, avant le tachymetre »). Taille fixe et
+        # petite : c'est un cadran dessine en fraction de son propre canevas (cf.
+        # compteurs.Compteur), centre verticalement — pas une icone de bouton, qui se
+        # calerait en haut comme `poser_widget_de_titre` le fait pour les boutons du
+        # panneau (cf. AlignTop plus bas dans ce fichier).
+        # ⚠ POSSEDEE PAR LA CELLULE, contrairement aux boutons du panneau qui sont PRETES
+        # (poser_widget_de_titre / liberer) : ce cadran est propre a CETTE conversation, il
+        # n'a pas a survivre a la destruction de sa cellule. `Mosaique.liberer()` n'a donc
+        # rien de special a faire pour lui.
+        self._compteur = Compteur(self)
+        dimensionner_compteur(self._compteur)
+        self._ligne_titre.addWidget(self._compteur, 0, Qt.AlignVCenter)
         self._ligne_titre.addStretch(1)
 
         # ⚠ LA LIGNE DE TITRE ET LE TERMINAL N'ONT PAS LES MEMES MARGES, ET C'EST VOULU.

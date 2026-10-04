@@ -1491,7 +1491,7 @@ class PanneauClaude(PluginMainWidget):
             coin.poser_pleine_echelle(self.vitesse_maximale())
 
     def _greffer_le_compteur(self, index):
-        """Remplace le widget RightSide de l'onglet `index` par [Compteur][croix].
+        """Remplace le widget RightSide de l'onglet `index` par [croix][Compteur].
 
         Retourne le CoinDOnglet en place (existant ou tout juste cree), ou None si
         l'onglet n'a pas de croix a cet index (l'onglet d'attente : rien a greffer).

@@ -690,9 +690,16 @@ class TestCompteursDOnglet(unittest.TestCase):
         barre = self.p._onglets.tabBar()
         hauteur_avant = barre.tabRect(0).height()
         self.p._rafraichir_les_compteurs()
+        # Affiche : le cadran n'est pose qu'a l'affichage du coin (`_suivre`) ; sans
+        # cela il reste en (0, 0) et la comparaison d'abscisses ne prouve rien.
+        self.p.resize(700, 400)
+        self.p.show()
+        APP.processEvents()
         coin = barre.tabButton(0, QTabBar.RightSide)
         croix = coin.croix().geometry().translated(coin.pos())
-        self.assertLess(coin._compteur.geometry().right(), croix.left())
+        # Ordre [titre][croix][cadran] : demande de l'utilisateur, 04/10/2026, « la
+        # croix [...] a cote du titre, avant le tachymetre ».
+        self.assertLess(croix.right(), coin._compteur.geometry().left())
         self.assertEqual(barre.tabRect(0).height(), hauteur_avant)
 
     def test_le_cadran_tombe_sur_le_texte_de_longlet(self):
@@ -719,8 +726,13 @@ class TestCompteursDOnglet(unittest.TestCase):
                              for x in range(x0, x1))]
             return (min(lignes) + max(lignes)) / 2.0
 
-        self.assertAlmostEqual(encre(onglet.left() + 4, cadran.left() - 2),
-                               encre(cadran.left(), cadran.right()), delta=1.5)
+        croix = coin.croix().geometry().translated(coin.pos())
+        texte = encre(onglet.left() + 4, croix.left() - 2)
+        self.assertAlmostEqual(texte, encre(cadran.left(), cadran.right()), delta=1.5)
+        # La croix aussi (demande de l'utilisateur, 04/10/2026 : « la croix de fermeture
+        # [doit] aussi etre alignee avec le titre »).
+        self.assertAlmostEqual(texte, encre(croix.left() + 2, croix.right() - 2),
+                               delta=1.5)
 
     def test_oublier_purge_aussi_le_compteur(self):
         """PAS SEULEMENT LE DICTIONNAIRE : `TabBar.tabRemoved` renumerote les croix
