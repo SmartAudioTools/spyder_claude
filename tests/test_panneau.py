@@ -51,7 +51,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from qtpy.QtCore import QEvent, QPointF  # noqa: E402
 from qtpy.QtGui import QEnterEvent  # noqa: E402
-from qtpy.QtWidgets import QApplication, QTabBar, QWidget  # noqa: E402
+from qtpy.QtWidgets import QApplication, QTabBar, QVBoxLayout, QWidget  # noqa: E402
 
 APP = QApplication.instance() or QApplication([])
 
@@ -83,9 +83,25 @@ class FausseVue(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.arrets = []
+        self.envois = []
+        #: (pid du shell, pid au premier plan) — egaux quand le shell attend.
+        self.pids = (42, 42)
+        # Comme VueKonsole : un layout vertical dont le « terminal » occupe le fond,
+        # c'est la que le panneau insere le bouton « Nouvelle session ».
+        disposition = QVBoxLayout(self)
+        disposition.addWidget(QWidget(self))
 
     def arreter(self, force=False):
         self.arrets.append(force)
+
+    def envoyer(self, texte):
+        self.envois.append(texte)
+
+    def pid_shell(self):
+        return self.pids[0]
+
+    def pid_premier_plan(self):
+        return self.pids[1]
 
 
 def panneau():
@@ -274,6 +290,86 @@ class TestFermeture(unittest.TestCase):
             self.assertEqual(vue.arrets, [True], "session non arretee")
 
 
+class TestBandeauNouvelleSession(unittest.TestCase):
+    """Le bouton « Nouvelle session » au-dessus du selecteur `claude -r` (04/10/2026).
+
+    Le selecteur de Claude Code n'a aucune entree « nouvelle session » : ce bouton la
+    fournit. `ouvrir_terminal` lançant un vrai shell, on reproduit ici ce qu'elle fait
+    autour du bouton — et on verifie par la source qu'elle le fait, comme
+    TestListeDesSessions le fait deja pour `_vues`.
+    """
+
+    def setUp(self):
+        self.p = panneau()
+
+    def tearDown(self):
+        self.p.deleteLater()
+
+    def _session(self, identifiant="aaa"):
+        vue = FausseVue(self.p._onglets)
+        self.p._onglets.addTab(vue, "essai")
+        self.p._vues.append(vue)
+        self.p._titres[vue] = "essai"
+        self.p._identifiants[vue] = identifiant
+        return vue
+
+    def test_ouvrir_terminal_pose_le_bandeau(self):
+        import inspect
+        source = inspect.getsource(PanneauClaude.ouvrir_terminal)
+        self.assertIn("self._poser_bandeau(vue)", source)
+
+    def test_le_bouton_nait_au_dessus_du_terminal(self):
+        """Pleine largeur au-dessus du terminal = premiere ligne du layout de la vue."""
+        vue = self._session()
+        self.p._poser_bandeau(vue)
+        bouton = self.p._bandeaux[vue]
+        self.assertIs(vue.layout().itemAt(0).widget(), bouton)
+
+    def test_pas_de_bouton_sans_selecteur(self):
+        """Sur une commande sans option de reprise, Echap partirait dans une session en
+        cours : rien n'est pose."""
+        self.p.commande_claude = lambda: "claude"
+        vue = self._session()
+        self.p._poser_bandeau(vue)
+        self.assertNotIn(vue, self.p._bandeaux)
+
+    def test_le_clic_quitte_le_selecteur_puis_lance_une_session_neuve(self):
+        vue = self._session()
+        self.p._poser_bandeau(vue)
+        vue.pids = (42, 77)                       # le selecteur est au premier plan
+        self.p._bandeaux[vue].click()
+        self.assertNotIn(vue, self.p._bandeaux)   # disparu des le clic
+        self.assertEqual(vue.envois, ["\x1b"])    # Echap envoye, rien d'autre
+        self.p._relancer_si_prete(vue)            # battement : selecteur encore la
+        self.assertEqual(vue.envois, ["\x1b"])
+        vue.pids = (42, 42)                       # le shell est revenu
+        self.p._relancer_si_prete(vue)
+        self.assertEqual(vue.envois, ["\x1b", "claude\n"])
+        self.assertNotIn(vue, self.p._relances)
+
+    def test_la_relance_abandonne_au_plafond(self):
+        """Taper « claude » dans un selecteur encore ouvert partirait dans son champ de
+        recherche : au plafond, on n'insiste pas."""
+        vue = self._session()
+        self.p._poser_bandeau(vue)
+        vue.pids = (42, 77)
+        self.p._bandeaux[vue].click()
+        for _tic in range(self.p.PLAFOND_RELANCE // self.p.PERIODE_RELANCE):
+            self.p._relancer_si_prete(vue)
+        self.assertNotIn(vue, self.p._relances)
+        self.assertEqual(vue.envois, ["\x1b"])
+
+    def test_oublier_purge_le_bouton_et_la_relance(self):
+        """Un bouton ou un minuteur fantome viserait une vue detruite."""
+        vue = self._session()
+        self.p._poser_bandeau(vue)
+        self.p._nouvelle_session(vue)   # arme la relance (et retire le bouton)
+        self.p._poser_bandeau(vue)      # un bouton de nouveau present
+        self.p._oublier(vue)
+        self.assertNotIn(vue, self.p._bandeaux)
+        self.assertNotIn(vue, self.p._relances)
+
+
 class TestRegistreDetat(unittest.TestCase):
     """Ce que le panneau Claude ajoute : lire le registre, et le montrer.
 
@@ -332,6 +428,16 @@ class TestRegistreDetat(unittest.TestCase):
         self._declarer("aaa", "waiting")
         self.p.relire_le_registre()
         self.assertEqual(self.p._etats.get(vue), "waiting")
+
+    def test_un_etat_declare_retire_le_bouton_nouvelle_session(self):
+        """Choisir une session dans le selecteur fait naitre l'instance dans le
+        registre : c'est CE signal qui retire le bouton « Nouvelle session »."""
+        vue = self._session("aaa")
+        self.p._poser_bandeau(vue)
+        self.assertIn(vue, self.p._bandeaux)
+        self._declarer("aaa", "busy")
+        self.p.relire_le_registre()
+        self.assertNotIn(vue, self.p._bandeaux)
 
     def test_relire_le_registre_ne_leve_pas_sur_un_registre_vide(self):
         """Cas courant : aucune instance declaree, et un battement toutes les demi-secondes."""

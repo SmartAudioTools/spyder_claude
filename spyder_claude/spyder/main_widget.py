@@ -67,7 +67,7 @@ import qtawesome as qta
 
 from qtpy.QtCore import QEvent, Qt, QTimer, Signal
 from qtpy.QtGui import QIcon
-from qtpy.QtWidgets import QApplication, QLabel, QTabBar, QVBoxLayout
+from qtpy.QtWidgets import QApplication, QLabel, QPushButton, QTabBar, QVBoxLayout
 
 from spyder.widgets.tabs import Tabs
 
@@ -138,6 +138,12 @@ class PanneauClaude(PluginMainWidget):
         self._dernieres_fenetres = None
         #: le CoinDOnglet greffe sur chaque onglet, par vue — cf. _greffer_le_compteur.
         self._coins = {}
+        #: le bouton « Nouvelle session » pose au-dessus du selecteur `claude -r`,
+        #: par vue — retire des qu'une session reelle existe (cf. _poser_bandeau).
+        self._bandeaux = {}
+        #: la surveillance « le selecteur est-il referme ? » armee par un clic sur ce
+        #: bouton, par vue : [minuteur, duree ecoulee en ms].
+        self._relances = {}
         self._minuteur = None
         self._en_mosaique = False
         self._agrandi = False
@@ -587,9 +593,9 @@ class PanneauClaude(PluginMainWidget):
     def _oublier(self, vue):
         """Tout ce qui est indexe par la vue se purge ICI, en un seul endroit.
 
-        Cinq dictionnaires plutot qu'un objet de session : ils sont lus a des rythmes
+        Des dictionnaires plutot qu'un objet de session : ils sont lus a des rythmes
         differents (les titres a chaque OSC, les etats et la vitesse a chaque battement du
-        registre) et aucun code n'a besoin des cinq a la fois. Ce qui compte est qu'ils se
+        registre) et aucun code n'a besoin de tous a la fois. Ce qui compte est qu'ils se
         vident ensemble — une vue oubliee d'un seul cote laisserait un identifiant fantome
         dans le registre, donc une couleur ou une vitesse posee sur un onglet detruit.
         """
@@ -599,6 +605,11 @@ class PanneauClaude(PluginMainWidget):
         self._identifiants.pop(vue, None)
         self._etats.pop(vue, None)
         self._dernieres_vitesses.pop(vue, None)
+        # Le bouton « Nouvelle session » est enfant de la vue, detruit avec elle : seul
+        # le dictionnaire se purge. Le minuteur de relance, lui, a le panneau pour
+        # parent — on l'arrete explicitement.
+        self._bandeaux.pop(vue, None)
+        self._arreter_relance(vue)
         # ⚠ `deleteLater()`, PAS SEULEMENT `pop` : fermer un onglet ne detruit QUE son
         # widget de page. `TabBar.tabRemoved` (spyder/widgets/tabs.py) renumerote les
         # boutons des onglets restants mais ne detruit jamais celui de l'onglet ferme —
@@ -1001,10 +1012,95 @@ class PanneauClaude(PluginMainWidget):
         vue.demarrer(commande=commande, repertoire=repertoire,
                      environnement=variables)
         vue.envoyer(self.commande_claude() + "\n")
+        self._poser_bandeau(vue)
         vue.setFocus()
         self._ajuster_affichage()
         self.update_actions()
         return vue
+
+    #: Periode et plafond de la surveillance « le selecteur est-il referme ? », en ms.
+    PERIODE_RELANCE = 100
+    PLAFOND_RELANCE = 10000
+
+    def _commande_est_le_selecteur(self):
+        """Vrai si la commande tapee a l'ouverture est le selecteur de sessions."""
+        return bool({"-r", "--resume"} & set(self.commande_claude().split()))
+
+    def _commande_nouvelle_session(self):
+        """La commande configuree, sans son option de reprise : une session neuve."""
+        mots = [m for m in self.commande_claude().split()
+                if m not in ("-r", "--resume")]
+        return " ".join(mots) or "claude"
+
+    def _poser_bandeau(self, vue):
+        """Le bouton « Nouvelle session », en pleine largeur au-dessus du terminal.
+
+        Demande de l'utilisateur (04/10/2026) : l'onglet s'ouvre sur `claude -r` pour
+        montrer d'emblee les sessions reprenables, mais ce selecteur n'a aucune entree
+        « nouvelle session » (verifie dans la doc officielle de Claude Code). Le bouton
+        comble ce manque, et disparait des qu'une session existe — choisie dans le
+        selecteur (le registre d'etat la revele, cf. relire_le_registre) ou ouverte par
+        le bouton lui-meme.
+
+        Insere DANS la vue (son layout vertical, au-dessus du terminal), pas dans le
+        panneau : le terminal se reduit d'autant, et onglets comme mosaique deplacent la
+        vue avec son bouton sans rien savoir de lui. Rien n'est pose si la commande
+        configuree n'est pas le selecteur : Echap partirait alors dans une session en
+        cours.
+        """
+        if not self._commande_est_le_selecteur():
+            return
+        bouton = QPushButton(_("Nouvelle session"), vue)
+        bouton.clicked.connect(lambda checked=False, v=vue: self._nouvelle_session(v))
+        vue.layout().insertWidget(0, bouton)
+        self._bandeaux[vue] = bouton
+
+    def _retirer_bandeau(self, vue):
+        bouton = self._bandeaux.pop(vue, None)
+        if bouton is not None:
+            bouton.setParent(None)   # sort du layout (et cache) tout de suite
+            bouton.deleteLater()
+
+    def _nouvelle_session(self, vue):
+        """Clic sur « Nouvelle session » : quitter le selecteur, puis lancer `claude`.
+
+        Echap referme le selecteur et rend le shell ; on ne tape la commande qu'une fois
+        le shell REELLEMENT revenu au premier plan du pty (etat reel, pas de delai fixe),
+        sous un plafond au-dela duquel on n'insiste pas : taper « claude » dans un
+        selecteur encore ouvert partirait dans son champ de recherche.
+        """
+        self._retirer_bandeau(vue)
+        vue.envoyer("\x1b")
+        minuteur = QTimer(self)
+        minuteur.setInterval(self.PERIODE_RELANCE)
+        minuteur.timeout.connect(lambda v=vue: self._relancer_si_prete(v))
+        self._relances[vue] = [minuteur, 0]
+        minuteur.start()
+
+    def _relancer_si_prete(self, vue):
+        """Un battement de la surveillance : le shell est-il revenu au premier plan ?
+
+        Sans effet de bord cache, comme `relire_le_registre` : un banc l'appelle
+        directement, sans faire tourner le minuteur.
+        """
+        suivi = self._relances.get(vue)
+        if suivi is None:
+            return
+        pid_shell = vue.pid_shell()
+        if pid_shell > 0 and vue.pid_premier_plan() == pid_shell:
+            self._arreter_relance(vue)
+            vue.envoyer(self._commande_nouvelle_session() + "\n")
+            vue.setFocus()
+            return
+        suivi[1] += self.PERIODE_RELANCE
+        if suivi[1] >= self.PLAFOND_RELANCE:
+            self._arreter_relance(vue)
+
+    def _arreter_relance(self, vue):
+        suivi = self._relances.pop(vue, None)
+        if suivi is not None:
+            suivi[0].stop()
+            suivi[0].deleteLater()
 
     #: Titre de l'onglet d'attente, quand il n'y a aucune session.
     TITRE_VIDE = "—"
@@ -1215,6 +1311,11 @@ class PanneauClaude(PluginMainWidget):
             if etat != self._etats.get(vue):
                 self._etats[vue] = etat
                 self._appliquer_etat(vue, etat)
+                # Une instance declaree dans le registre = une session reelle a demarre
+                # (choisie dans le selecteur `claude -r`, ou autrement) : le bouton
+                # « Nouvelle session » n'a plus de raison d'etre.
+                if etat is not None:
+                    self._retirer_bandeau(vue)
 
         cible = etat_instances.demande_de_focus()
         if cible:
