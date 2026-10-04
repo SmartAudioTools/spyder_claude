@@ -671,5 +671,34 @@ class TestAffichage(unittest.TestCase):
         self.assertTrue(self.mosaique._bouton_reduire.isVisible())
 
 
+class TestTachymetreDeCellule(unittest.TestCase):
+
+    def test_le_cadran_tombe_sur_le_titre(self):
+        """Signale par l'utilisateur, 04/10/2026 : le tachymetre « n'est pas du tout aligne
+        avec le titre des fenetres dans la mosaique ». Le titre est descendu par
+        `RETRAIT_TEXTE_*` (feuille de style posee par `poser_couleur`), le cadran etait
+        centre sur la ligne : 5 px trop haut. Mesure sur l'ENCRE, comme l'oeil."""
+        cellule = Cellule(QWidget(), "Essai Claude titre")
+        cellule.resize(400, 200)
+        cellule.poser_couleur(None)
+        cellule.show()
+        cellule.poser_vitesse(2500)
+        QApplication.processEvents()
+        image = cellule.grab().toImage()
+        titre = cellule._etiquette.geometry()
+        cadran = cellule._compteur.geometry()
+
+        def encre(x0, x1):
+            fond = image.pixelColor(x0, 0).lightness()
+            lignes = [y for y in range(0, titre.bottom())
+                      if any(abs(image.pixelColor(x, y).lightness() - fond) > 40
+                             for x in range(x0, x1))]
+            return (min(lignes) + max(lignes)) / 2.0
+
+        self.assertAlmostEqual(encre(titre.left(), titre.right()),
+                               encre(cadran.left(), cadran.right()), delta=1.5)
+        cellule.deleteLater()
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

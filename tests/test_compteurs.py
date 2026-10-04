@@ -43,6 +43,19 @@ class TestCompteur(unittest.TestCase):
         cadran.poser_valeur(0)
         cadran.grab()
 
+    def test_rien_nest_dessine_a_larret(self):
+        """Demande de l'utilisateur, 04/10/2026 : « il devrait etre invisible quand la
+        vitesse est a zero, pour ne pas poluer l'affichage pour rien ». Ni a zero, ni sans
+        mesure : pas meme la piste grise."""
+        for valeur in (None, 0):
+            cadran = self._cadran()
+            cadran.poser_valeur(valeur)
+            image = cadran.grab().toImage()
+            fond = image.pixel(0, 0)
+            self.assertTrue(all(image.pixel(x, y) == fond
+                                for x in range(image.width()) for y in range(image.height())),
+                            "quelque chose est peint a %r" % (valeur,))
+
     def test_le_compteur_se_dessine_sans_lever_a_mi_course(self):
         cadran = self._cadran()
         cadran.poser_pleine_echelle(6.0)

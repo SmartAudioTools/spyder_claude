@@ -17,7 +17,8 @@ CE QUE SPYDER FAIT DEJA, ET QUE CE GREFFON NE DOIT PAS CASSER (`TabBar`, tabs.py
     la reparente.
 
 CE QUE CE MODULE FAIT : remplace le widget `RightSide` par un petit conteneur
-[Compteur][croix d'origine]. La croix d'origine est REPARENTEE, pas recreee — sinon la
+[place du Compteur][croix d'origine] — le cadran lui-meme est pose par-dessus la barre, a
+cette place (cf. `CoinDOnglet.__init__`). La croix d'origine est REPARENTEE, pas recreee — sinon la
 connexion `sig_clicked -> tabCloseRequested` posee par Spyder a l'insertion serait perdue.
 Une fois reparentee, son `.parent()` devient CE conteneur, plus la barre : chaque appel
 que Spyder fait sur « la croix » doit donc etre PROXIFIE ici vers la bonne cible — vers la
@@ -35,21 +36,21 @@ tachymetre, et son heuristique de reperage de la croix par GEOMETRIE
 defaut trouve ici n'a PAS a etre porte la-bas.
 """
 
-from qtpy.QtCore import Qt
+from qtpy.QtCore import QSize, Qt
 from qtpy.QtWidgets import QHBoxLayout, QWidget
 
 from spyder_claude.compteurs import Compteur
-from spyder_claude.mosaique import TAILLE_COMPTEUR
+from spyder_claude.mosaique import TAILLE_COMPTEUR, dimensionner_compteur
 
 
 class CoinDOnglet(QWidget):
-    """[Compteur][croix], installe a la place du widget RightSide d'un onglet.
+    """[place du Compteur][croix], installe a la place du widget RightSide d'un onglet.
 
     Construit SANS croix (cf. `adopter_la_croix`) : voir le commentaire d'ordre de greffe
     ci-dessus, dans le module.
     """
 
-    def __init__(self, barre):
+    def __init__(self, barre, croix_prevue):
         super().__init__(barre)
         #: La VRAIE barre d'onglets — cible des appels `tabToolTip`/`setTabToolTip` que
         #: la croix, une fois reparentee ICI, nous adresse a la place (cf.
@@ -57,13 +58,29 @@ class CoinDOnglet(QWidget):
         self._barre = barre
         self._croix = None
 
-        self._compteur = Compteur(self)
-        self._compteur.setFixedSize(TAILLE_COMPTEUR, TAILLE_COMPTEUR)
+        #: ⚠ LE CADRAN N'EST PAS DANS CE CONTENEUR, IL EST POSE PAR-DESSUS LA BARRE.
+        #: Pour tomber sur le TEXTE de l'onglet (cf. mosaique.dimensionner_compteur), il
+        #: est plus haut que la croix ; dans le conteneur, cette hauteur passait a QTabBar,
+        #: qui en deduit celle de l'onglet — 47 px au lieu de 40 (banc du 04/10/2026), et
+        #: tout l'alignement onglets/mosaique de `Cellule.RETRAIT_TEXTE_*` avec. Le
+        #: conteneur ne fait donc que lui RESERVER sa largeur ; `_suivre` le place, et
+        #: `destroyed` l'emporte avec l'onglet.
+        self._compteur = Compteur(barre)
+        dimensionner_compteur(self._compteur)
+        self.destroyed.connect(self._compteur.deleteLater)
+        #: ⚠ LA PLACE DE LA CROIX SE RESERVE AVANT D'ELLE. QTabBar dimensionne le bouton
+        #: d'apres son `sizeHint()` lu UNE fois, au `setTabButton` — donc avant
+        #: `adopter_la_croix`. Sans cette reserve le coin restait large du seul cadran, et
+        #: la croix venait le recouvrir (banc du 04/10/2026 : compteur x 162-180, croix
+        #: x 172-180). `size()` et non `sizeHint()` : `CloseTabButton` se donne sa taille
+        #: par `resize` (SIZE+2 x SIZE+6) ; son sizeHint de QToolButton (41x34 au banc)
+        #: faisait grandir l'onglet.
+        self._taille_croix = croix_prevue.size()
 
         self._disposition = QHBoxLayout(self)
         self._disposition.setContentsMargins(0, 0, 0, 0)
         self._disposition.setSpacing(2)
-        self._disposition.addWidget(self._compteur, 0, Qt.AlignVCenter)
+        self._disposition.addSpacing(TAILLE_COMPTEUR)
 
     def adopter_la_croix(self, croix):
         """Reparente la croix D'ORIGINE dans ce conteneur, et la reaffiche.
@@ -72,8 +89,42 @@ class CoinDOnglet(QWidget):
         cf. le commentaire d'ordre en tete de module.
         """
         self._croix = croix
+        croix.setFixedSize(self._taille_croix)  # sinon le layout l'etire a son sizeHint
         self._disposition.addWidget(croix, 0, Qt.AlignVCenter)
         croix.show()
+
+    def sizeHint(self):  # noqa: N802 - API Qt
+        return QSize(TAILLE_COMPTEUR + self._disposition.spacing() + self._taille_croix.width(),
+                     self._taille_croix.height())
+
+    def _suivre(self):
+        """Pose le cadran sur la place reservee, a la hauteur de celui de la mosaique.
+
+        Centre sur le conteneur, PLUS 1 px : mesure au banc (04/10/2026), le texte d'un
+        onglet et celui d'une cellule tombent a la meme ordonnee (y 19-32 dans les deux),
+        et c'est avec ce pixel que les deux cadrans aussi (y 18-32). Le cadran de la
+        cellule etant cale par construction, c'est lui la reference.
+        """
+        g = self.geometry()
+        self._compteur.move(g.x(), g.y() + (g.height() - self._compteur.height()) // 2 + 1)
+        self._compteur.setVisible(self.isVisible())
+        self._compteur.raise_()
+
+    def moveEvent(self, event):  # noqa: N802 - API Qt
+        super().moveEvent(event)
+        self._suivre()
+
+    def resizeEvent(self, event):  # noqa: N802 - API Qt
+        super().resizeEvent(event)
+        self._suivre()
+
+    def showEvent(self, event):  # noqa: N802 - API Qt
+        super().showEvent(event)
+        self._suivre()
+
+    def hideEvent(self, event):  # noqa: N802 - API Qt
+        super().hideEvent(event)
+        self._compteur.hide()
 
     def croix(self):
         """La croix de fermeture d'origine. Utile a `_relever_la_croix_dun_onglet`."""

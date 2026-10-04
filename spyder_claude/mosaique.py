@@ -52,6 +52,24 @@ TAILLE_BOUTON = 44
 TAILLE_COMPTEUR = 18
 
 
+def dimensionner_compteur(compteur):
+    """Donne au tachymetre sa taille, cadran CENTRE SUR LE TEXTE du titre et non sur la ligne.
+
+    Le titre ne tombe pas au milieu de sa ligne : en onglets, la feuille de style de Spyder
+    le dessine 5 px sous le centre de l'onglet (banc du 04/10/2026 : texte y 18-31 dans un
+    onglet de 40, cadran centre y 11-28) ; en mosaique, l'etiquette est calee sur l'onglet
+    par `Cellule.RETRAIT_TEXTE_*`, donc meme ecart. Signale par l'utilisateur, 04/10/2026 :
+    « le tachymetre n'est pas du tout aligne avec le titre ». Le decalage est DERIVE de ces
+    retraits plutot que mesure une seconde fois : le jour ou ils changent, le cadran suit.
+    Une marge haute du double de l'ecart, dans un widget d'autant plus haut, garde ce
+    widget centre sur la ligne (ou les layouts le posent) et descend le cadran de l'ecart,
+    `Compteur.paintEvent` dessinant dans `contentsRect()`.
+    """
+    descente = 2 * ((Cellule.RETRAIT_TEXTE_HAUT - Cellule.RETRAIT_TEXTE_BAS) // 2)
+    compteur.setContentsMargins(0, descente, 0, 0)
+    compteur.setFixedSize(TAILLE_COMPTEUR, TAILLE_COMPTEUR + descente)
+
+
 def disposition(nombre):
     """Le nombre de cellules par rangee, pour `nombre` sessions.
 
@@ -159,7 +177,7 @@ class Cellule(QFrame):
         # n'a pas a survivre a la destruction de sa cellule. `Mosaique.liberer()` n'a donc
         # rien de special a faire pour lui.
         self._compteur = Compteur(self)
-        self._compteur.setFixedSize(TAILLE_COMPTEUR, TAILLE_COMPTEUR)
+        dimensionner_compteur(self._compteur)
         self._ligne_titre.addWidget(self._compteur, 0, Qt.AlignVCenter)
 
         # LA CROIX DE FERMETURE, JUSTE A DROITE DU TITRE et sur sa ligne (demande de

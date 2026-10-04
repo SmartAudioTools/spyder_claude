@@ -682,6 +682,46 @@ class TestCompteursDOnglet(unittest.TestCase):
         self.assertGreater(largeur, 0)
         self.assertGreater(hauteur, 0)
 
+    def test_le_cadran_ne_chevauche_pas_la_croix_ni_ne_grandit_longlet(self):
+        """Le coin reserve la place de la croix AVANT de l'adopter (QTabBar lit sa taille
+        au `setTabButton`), et le cadran, plus haut que la croix, n'est pas dans le coin :
+        sinon l'onglet grandissait de 7 px (banc du 04/10/2026)."""
+        self._session("aaa", "Essai Claude titre")
+        barre = self.p._onglets.tabBar()
+        hauteur_avant = barre.tabRect(0).height()
+        self.p._rafraichir_les_compteurs()
+        coin = barre.tabButton(0, QTabBar.RightSide)
+        croix = coin.croix().geometry().translated(coin.pos())
+        self.assertLess(coin._compteur.geometry().right(), croix.left())
+        self.assertEqual(barre.tabRect(0).height(), hauteur_avant)
+
+    def test_le_cadran_tombe_sur_le_texte_de_longlet(self):
+        """Signale par l'utilisateur, 04/10/2026 : « le tachymetre n'est pas du tout
+        aligne avec le titre des onglets ». Mesure sur l'ENCRE, comme l'oeil : les lignes
+        de la barre ou le texte, puis le cadran, s'ecartent du fond. Avant correctif,
+        texte y 18-31 et cadran 11-28 — 5 px trop haut."""
+        self._session("aaa", "Essai Claude titre")
+        self.p.resize(700, 400)
+        self.p.show()
+        self.p._rafraichir_les_compteurs()
+        barre = self.p._onglets.tabBar()
+        coin = barre.tabButton(0, QTabBar.RightSide)
+        coin.poser_vitesse(2500)
+        APP.processEvents()
+        image = barre.grab().toImage()
+        onglet = barre.tabRect(0)
+        cadran = coin._compteur.geometry()
+
+        def encre(x0, x1):
+            fond = image.pixelColor(x0, onglet.top() + 1).lightness()
+            lignes = [y for y in range(onglet.top() + 1, onglet.bottom())
+                      if any(abs(image.pixelColor(x, y).lightness() - fond) > 40
+                             for x in range(x0, x1))]
+            return (min(lignes) + max(lignes)) / 2.0
+
+        self.assertAlmostEqual(encre(onglet.left() + 4, cadran.left() - 2),
+                               encre(cadran.left(), cadran.right()), delta=1.5)
+
     def test_oublier_purge_aussi_le_compteur(self):
         """PAS SEULEMENT LE DICTIONNAIRE : `TabBar.tabRemoved` renumerote les croix
         restantes mais ne detruit jamais celle de l'onglet ferme (verifie dans
@@ -694,6 +734,7 @@ class TestCompteursDOnglet(unittest.TestCase):
         vue = self._session("aaa")
         self.p._rafraichir_les_compteurs()
         coin = self.p._coins[vue]
+        cadran = coin._compteur  # enfant de la BARRE, pas du coin : cf. onglet_compteur
         self.p._oublier(vue)
         self.assertNotIn(vue, self.p._coins)
         # `processEvents()` seul ne suffit pas toujours a faire executer un
@@ -702,6 +743,9 @@ class TestCompteursDOnglet(unittest.TestCase):
         APP.sendPostedEvents(None, QEvent.DeferredDelete)
         with self.assertRaises(RuntimeError):
             coin.parent()
+        APP.sendPostedEvents(None, QEvent.DeferredDelete)  # celui pose par `destroyed`
+        with self.assertRaises(RuntimeError):
+            cadran.parent()
 
 
 if __name__ == "__main__":

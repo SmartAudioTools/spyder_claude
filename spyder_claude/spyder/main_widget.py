@@ -1508,7 +1508,7 @@ class PanneauClaude(PluginMainWidget):
             return actuel
         if actuel is None:
             return None
-        coin = CoinDOnglet(barre)
+        coin = CoinDOnglet(barre, actuel)
         barre.setTabButton(index, QTabBar.RightSide, coin)
         coin.adopter_la_croix(actuel)
         return coin

@@ -182,11 +182,18 @@ class Compteur(QWidget):
     def paintEvent(self, event):  # noqa: N802 - API Qt
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing, True)
-        cote = min(self.width(), self.height())
+        # INVISIBLE A L'ARRET (demande de l'utilisateur, 04/10/2026 : « il devrait etre
+        # invisible quand la vitesse est a zero, pour ne pas poluer l'affichage pour
+        # rien »). Rien n'est peint, mais le widget garde sa place : le masquer ferait
+        # sauter la largeur de l'onglet et la croix a chaque question qui commence ou finit.
+        if self._valeur is None or self._valeur <= 0:
+            return
+        zone = self.contentsRect()  # cf. mosaique.dimensionner_compteur
+        cote = min(zone.width(), zone.height())
         if cote <= 0:
             return
         marge = cote * 0.10
-        rect = QRectF(marge, marge, cote - 2 * marge, cote - 2 * marge)
+        rect = QRectF(zone.x() + marge, zone.y() + marge, cote - 2 * marge, cote - 2 * marge)
         epaisseur = max(1.0, cote * 0.16)
 
         stylo = QPen(self._couleur_piste())
@@ -197,9 +204,6 @@ class Compteur(QWidget):
 
         # Plus de zone rouge permanente dans la piste (04/10/2026, « le rouge ne devrait
         # pas s'afficher par defaut ») : le rouge ne vient que du remplissage, a haut regime.
-
-        if self._valeur is None:
-            return  # cadran eteint : rien a mesurer, ni remplissage ni aiguille
 
         proportion = max(0.0, min(1.0, self._valeur / self._pleine_echelle))
 
