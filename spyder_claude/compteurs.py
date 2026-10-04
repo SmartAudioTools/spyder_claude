@@ -4,8 +4,8 @@
 Deux widgets, tous deux nourris depuis usage.py, aucun des deux ne devine ni n'estime :
 
   Compteur      le tachymetre d'une conversation — vitesse de depense en $/heure, cadran
-                circulaire style compte-tours de voiture, avec une zone rouge PERMANENTE
-                dans le dernier tiers (anticiper, pas seulement constater).
+                circulaire style compte-tours de voiture, le remplissage virant du vert
+                au rouge avec la vitesse.
   BandeauUsage  la bande des deux jauges globales — fenetres de 5 h et de 7 jours, les
                 VRAIS pourcentages du compte tels que Anthropic les calcule.
 
@@ -60,9 +60,7 @@ def eclaircir(couleur, force=0.15):
                   round(couleur.blue() * (1 - force) + 255 * force))
 
 
-#: Echelle verte -> orange -> rouge du tachymetre. Le palier orange est cale sur le DEBUT
-#: du dernier tiers : la couleur du remplissage et la zone rouge permanente de la piste
-#: (cf. Compteur.paintEvent) s'accordent, elles ne sont pas choisies independamment.
+#: Echelle verte -> orange -> rouge du remplissage du tachymetre.
 _ECHELLE = [
     (0.00, (76, 175, 80)),    # vert
     (0.67, (255, 152, 0)),    # orange
@@ -197,13 +195,8 @@ class Compteur(QWidget):
         painter.setPen(stylo)
         painter.drawArc(rect, self.ANGLE_DEBUT * 16, self.ETENDUE * 16)
 
-        # La zone rouge du dernier tiers, dessinee EN PERMANENCE dans la piste — c'est ce
-        # qui permet d'ANTICIPER un emballement avant de l'atteindre, pas seulement de le
-        # constater une fois dedans. Meme palier que couleur_echelle (0.67).
-        stylo.setColor(QColor(211, 47, 47))
-        painter.setPen(stylo)
-        debut_rouge = self.ANGLE_DEBUT + self.ETENDUE * (2.0 / 3.0)
-        painter.drawArc(rect, round(debut_rouge * 16), round(self.ETENDUE / 3.0 * 16))
+        # Plus de zone rouge permanente dans la piste (04/10/2026, « le rouge ne devrait
+        # pas s'afficher par defaut ») : le rouge ne vient que du remplissage, a haut regime.
 
         if self._valeur is None:
             return  # cadran eteint : rien a mesurer, ni remplissage ni aiguille
