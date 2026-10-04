@@ -16,6 +16,8 @@ recopie dans un fichier par session :
     CU_CENTIMES                 cout cumule de CETTE session, en centimes
     CU_VITESSE                  centimes par heure, -1 = non mesurable
     CU_COUT_PREC / CU_INSTANT_PREC   ancrage interne au script, non relu ici
+    CU_SESSION                  identifiant de la conversation (session_id), vide si inconnu
+    CU_DOSSIER                  dossier de LANCEMENT de claude (workspace.project_dir)
 
 MEME DOSSIER QUE LE REGISTRE D'ETAT, ET C'EST VOULU : un fichier par PID Claude, la meme
 liveness que `etat_instances._vivant()` donne deja pour `inst-<pid>`, sans dupliquer cette
@@ -173,6 +175,24 @@ def vitesses_par_onglet(dossier=None, maintenant=None):
         brute = _entier(valeurs.get("CU_VITESSE"), -1)
         vitesse = None if brute < 0 else brute
         resultat[pane] = vitesse_decrue(vitesse, maintenant - horodatage)
+    return resultat
+
+
+def sessions_par_onglet(dossier=None):
+    """{identifiant d'onglet (CU_PANE): (session_id, dossier de lancement)}.
+
+    Ce qu'il faut pour rouvrir chaque conversation par `claude -r` au prochain demarrage
+    de Spyder (cf. main_widget._memoriser_les_sessions). Le dossier est celui de
+    LANCEMENT et non le dossier courant : `claude -r` cherche la conversation dans le
+    projet du dossier ou il est lance. Un onglet sans CU_SESSION (statusline pas encore
+    passee, ou ancienne version du script) est absent : rien a rouvrir.
+    """
+    resultat = {}
+    for valeurs in _lire_usages(dossier).values():
+        pane = valeurs.get("CU_PANE") or ""
+        session = valeurs.get("CU_SESSION") or ""
+        if pane and session:
+            resultat[pane] = (session, valeurs.get("CU_DOSSIER") or "")
     return resultat
 
 

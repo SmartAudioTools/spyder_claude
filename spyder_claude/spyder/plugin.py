@@ -73,6 +73,9 @@ class GreffonClaude(SpyderDockablePlugin):
         # Apres tout le montage de Spyder : c'est le seul moment ou masquer le burger
         # vide tient (cf. PanneauClaude._masquer_burger_vide).
         widget._masquer_burger_vide()
+        # Les conversations ouvertes a la derniere fermeture (ou au dernier plantage)
+        # d'abord ; l'instance par defaut seulement s'il n'y en avait aucune.
+        widget.rouvrir_les_sessions()
         if widget.nombre_de_sessions() == 0:
             self.ouvrir_claude()
 

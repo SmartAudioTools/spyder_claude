@@ -147,6 +147,26 @@ class TestVitesses(BaseUsage):
         self.assertEqual(resultat["abc123"], 500.0)
 
 
+
+class TestSessions(BaseUsage):
+    """Ce que le panneau memorise pour rouvrir les conversations au demarrage."""
+
+    def test_une_session_de_panneau_donne_sa_conversation_et_son_dossier(self):
+        self.ecrire_usage(os.getpid(), CU_PANE="abc123", CU_SESSION="5f0c-1d2e",
+                          CU_DOSSIER="/chemin/avec espace")
+        self.assertEqual(usage.sessions_par_onglet(dossier=self.registre),
+                         {"abc123": ("5f0c-1d2e", "/chemin/avec espace")})
+
+    def test_sans_conversation_connue_rien_a_rouvrir(self):
+        """Ancienne statusline, ou pas encore passee : l'onglet est absent, pas
+        associe a une conversation vide qu'un `claude -r` ne saurait pas rouvrir."""
+        self.ecrire_usage(os.getpid(), CU_PANE="abc123", CU_VITESSE=500)
+        self.assertEqual(usage.sessions_par_onglet(dossier=self.registre), {})
+
+    def test_une_session_hors_spyder_n_est_pas_memorisee(self):
+        self.ecrire_usage(os.getpid(), CU_PANE="", CU_SESSION="5f0c-1d2e")
+        self.assertEqual(usage.sessions_par_onglet(dossier=self.registre), {})
+
 class TestSeuils(unittest.TestCase):
 
     def test_les_seuils_sont_ceux_du_script(self):

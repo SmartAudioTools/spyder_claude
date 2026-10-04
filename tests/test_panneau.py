@@ -457,14 +457,11 @@ class TestBandeauNouvelleSession(unittest.TestCase):
         self.assertNotIn(vue, self.p._relances)
 
 
-class TestRegistreDetat(unittest.TestCase):
-    """Ce que le panneau Claude ajoute : lire le registre, et le montrer.
+class FauxRegistre(unittest.TestCase):
+    """Un panneau et un faux registre jetable (XDG_RUNTIME_DIR deplace).
 
-    Le registre est un dossier de petits fichiers ecrits par les hooks de Claude Code. On
-    en fabrique un faux, et on appelle `relire_le_registre` a la main — c'est justement
-    pour cela qu'elle est publique et sans effet de bord cache : aucun minuteur a faire
-    tourner dans un banc.
-    """
+    Base commune de TestRegistreDetat et TestReouvertureDesSessions ; sans test a elle,
+    pour que ceux d'une classe ne soient pas rejoues par l'autre."""
 
     def setUp(self):
         self.p = panneau()
@@ -501,6 +498,15 @@ class TestRegistreDetat(unittest.TestCase):
         with io.open(chemin, "w", encoding="utf-8") as fichier:
             fichier.write("CW_SVC=%s\nCW_SESSION=%s\nCW_STATE=%s\nCW_SINCE=0\n"
                           % (etat_instances.SERVICE_SPYDER, identifiant, etat))
+
+class TestRegistreDetat(FauxRegistre):
+    """Ce que le panneau Claude ajoute : lire le registre, et le montrer.
+
+    Le registre est un dossier de petits fichiers ecrits par les hooks de Claude Code. On
+    en fabrique un faux, et on appelle `relire_le_registre` a la main — c'est justement
+    pour cela qu'elle est publique et sans effet de bord cache : aucun minuteur a faire
+    tourner dans un banc.
+    """
 
     def test_oublier_purge_aussi_lidentifiant_et_letat(self):
         """Un identifiant fantome ferait poser une couleur sur un onglet detruit."""
@@ -796,6 +802,91 @@ class TestCompteursDOnglet(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             cadran.parent()
 
+
+
+class TestReouvertureDesSessions(FauxRegistre):
+    """Rouvrir au demarrage les conversations ouvertes a la fermeture ou au plantage
+    precedents (demande du 04/10/2026). Meme faux registre que TestRegistreDetat :
+    l'identifiant de conversation arrive par les fichiers usage-<pid> de la statusline."""
+
+    CLE = PanneauClaude.CLE_SESSIONS
+
+    def setUp(self):
+        super().setUp()
+        # La configuration du banc vit dans le HOME de test et SURVIT d'un lancement a
+        # l'autre : on part d'une liste connue.
+        self.p.set_conf(self.CLE, [])
+
+    def _conversation(self, pid, onglet, session, dossier):
+        usage.deposer_usage(pid, {"CU_PANE": onglet, "CU_SESSION": session,
+                                  "CU_DOSSIER": dossier}, dossier=self.dossier)
+
+    def _deux_sessions(self):
+        une, deux = self._session("aaa"), self._session("bbb")
+        self._conversation(os.getpid(), "aaa", "S1", "/d1")
+        self._conversation(os.getppid(), "bbb", "S2", "/d 2")
+        return une, deux
+
+    def test_rien_ne_s_ecrit_avant_la_restauration(self):
+        """Le battement demarre au montage, avant `rouvrir_les_sessions` : s'il ecrivait,
+        il effacerait la liste a rouvrir."""
+        self.p.set_conf(self.CLE, [["X", "/x"]])
+        self._deux_sessions()
+        self.p.relire_le_registre()
+        self.assertEqual(self.p.get_conf(self.CLE), [["X", "/x"]])
+
+    def test_la_liste_suit_les_onglets_dans_leur_ordre(self):
+        self.p._sessions_memorisees = []
+        self._deux_sessions()
+        self.p.relire_le_registre()
+        self.assertEqual(self.p.get_conf(self.CLE), [["S1", "/d1"], ["S2", "/d 2"]])
+        self.p._fermer_onglet(0)
+        self.p.relire_le_registre()
+        self.assertEqual(self.p.get_conf(self.CLE), [["S2", "/d 2"]])
+
+    def test_un_clear_change_la_conversation_memorisee(self):
+        self.p._sessions_memorisees = []
+        self._deux_sessions()
+        self.p.relire_le_registre()
+        self._conversation(os.getpid(), "aaa", "S1-bis", "/d1")
+        self.p.relire_le_registre()
+        self.assertEqual(self.p.get_conf(self.CLE)[0], ["S1-bis", "/d1"])
+
+    def test_la_conversation_reste_connue_quand_son_fichier_disparait(self):
+        """claude sorti, ou session rouverte que la statusline n'a pas encore vue : la
+        vue garde sa conversation, elle ne disparait pas de la liste."""
+        self.p._sessions_memorisees = []
+        self._deux_sessions()
+        self.p.relire_le_registre()
+        for nom in os.listdir(self.dossier):
+            os.remove(os.path.join(self.dossier, nom))
+        self.p.relire_le_registre()
+        self.assertEqual(len(self.p.get_conf(self.CLE)), 2)
+
+    def test_fermer_spyder_n_efface_pas_la_liste(self):
+        self.p._sessions_memorisees = []
+        self._deux_sessions()
+        self.p.relire_le_registre()
+        self.p.on_close()
+        self.assertEqual(len(self.p.get_conf(self.CLE)), 2)
+
+    def test_rouvrir_reprend_chaque_conversation_et_saute_l_illisible(self):
+        appels = []
+        self.p.ouvrir_terminal = lambda dossier, conversation: appels.append(
+            (dossier, conversation))
+        self.p.set_conf(self.CLE, [["S1", "/d1"], ["illisible"], ["S2", ""]])
+        self.p.rouvrir_les_sessions()
+        self.assertEqual(appels, [("/d1", "S1"), ("", "S2")])
+        self.assertEqual(self.p._sessions_memorisees, [["S1", "/d1"], ["S2", ""]])
+
+    def test_une_conversation_se_reprend_sans_passer_par_le_selecteur(self):
+        self.p.set_conf("commande", "claude -r")
+        self.assertEqual(self.p._commande_nouvelle_session("-r S1"), "claude -r S1")
+        import inspect
+        source = inspect.getsource(PanneauClaude.ouvrir_terminal)
+        # le bandeau du selecteur n'est pose que dans la branche SANS conversation
+        self.assertLess(source.index("if conversation:"),
+                        source.index("self._poser_bandeau(vue)"))
 
 if __name__ == "__main__":
     # ⚠ PAS `unittest.main()` : il repose les filtres d'avertissement au demarrage

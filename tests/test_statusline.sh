@@ -67,7 +67,9 @@ cat > "$TEMP/complet.json" <<JSON
                      "input_tokens":2}},
  "rate_limits":{"five_hour":{"used_percentage":55,"resets_at":$((MAINTENANT + 7200))},
                 "seven_day":{"used_percentage":61,"resets_at":$((MAINTENANT + 172800))}},
- "cost":{"total_cost_usd":0.42}}
+ "cost":{"total_cost_usd":0.42},
+ "session_id":"5f0c1d2e-aaaa-bbbb-cccc-0123456789ab",
+ "workspace":{"current_dir":"/chemin/avec espace/sous","project_dir":"/chemin/avec espace"}}
 JSON
 
 cat > "$TEMP/sans_rate_limits.json" <<JSON
@@ -108,6 +110,10 @@ verifier "CU_PANE est le bon onglet"    "$(lire_cle "$fichier" CU_PANE)"     "ab
 verifier "CU_5H_PCT est relu"           "$(lire_cle "$fichier" CU_5H_PCT)"   "55"
 verifier "CU_7J_PCT est relu"           "$(lire_cle "$fichier" CU_7J_PCT)"   "61"
 verifier "CU_CENTIMES est en centimes" "$(lire_cle "$fichier" CU_CENTIMES)" "42"
+verifier "CU_SESSION est la conversation" "$(lire_cle "$fichier" CU_SESSION)" \
+	"5f0c1d2e-aaaa-bbbb-cccc-0123456789ab"
+verifier "CU_DOSSIER est le dossier de LANCEMENT, espaces compris" \
+	"$(lire_cle "$fichier" CU_DOSSIER)" "/chemin/avec espace"
 verifier "premier echantillon : vitesse non mesurable" \
 	"$(lire_cle "$fichier" CU_VITESSE)" "-1"
 restes=$(ls "$TEMP/run/claude-windows"/usage-*.[0-9]* 2>/dev/null | wc -l)
@@ -121,6 +127,8 @@ verifier_absent "pas de segment 5h"  "$sortie" "5 h"
 verifier_absent "pas de segment 7j"  "$sortie" "7 j"
 verifier "CU_5H_PCT vaut -1 (absent)" "$(lire_cle "$TEMP/apres1.env" CU_5H_PCT)" "-1"
 verifier "CU_7J_PCT vaut -1 (absent)" "$(lire_cle "$TEMP/apres1.env" CU_7J_PCT)" "-1"
+verifier "CU_SESSION vide (absente)"  "$(lire_cle "$TEMP/apres1.env" CU_SESSION)" ""
+verifier "CU_DOSSIER vide (absent)"   "$(lire_cle "$TEMP/apres1.env" CU_DOSSIER)" ""
 
 echo
 echo "--- Piege fr_FR : le montant ne doit jamais contenir de virgule ---"

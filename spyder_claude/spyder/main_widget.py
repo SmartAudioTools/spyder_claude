@@ -147,6 +147,13 @@ class PanneauClaude(PluginMainWidget):
         self._relances = {}
         #: le minuteur de silence qui leve le voile de lancement, par vue (cf. _lancer).
         self._calmes = {}
+        #: la conversation de chaque vue, (session_id, dossier de lancement) — ce que
+        #: `rouvrir_les_sessions` relance au prochain demarrage (cf. _memoriser_les_sessions).
+        self._conversations = {}
+        #: la derniere liste ecrite dans la configuration ; None tant que
+        #: `rouvrir_les_sessions` n'est pas passe, et alors RIEN ne s'ecrit (voir pourquoi
+        #: dans _memoriser_les_sessions).
+        self._sessions_memorisees = None
         self._minuteur = None
         self._en_mosaique = False
         self._agrandi = False
@@ -608,6 +615,7 @@ class PanneauClaude(PluginMainWidget):
         self._identifiants.pop(vue, None)
         self._etats.pop(vue, None)
         self._dernieres_vitesses.pop(vue, None)
+        self._conversations.pop(vue, None)
         # Le bandeau de nouvelle session est enfant de la vue, detruit avec elle : seul
         # le dictionnaire se purge. Le minuteur de relance, lui, a le panneau pour
         # parent — on l'arrete explicitement.
@@ -962,7 +970,8 @@ class PanneauClaude(PluginMainWidget):
         """L'identifiant de session d'une vue. Publique : sert aux tests et au diagnostic."""
         return self._identifiants.get(vue)
 
-    def ouvrir_terminal(self, repertoire=None, commande=None, environnement=None):
+    def ouvrir_terminal(self, repertoire=None, commande=None, environnement=None,
+                        conversation=None):
         """Cree un onglet, y lance un shell, puis y tape la commande de Claude.
 
         Le nom est celui du panneau de terminaux dont ce greffon reprend la mecanique ; le
@@ -977,6 +986,10 @@ class PanneauClaude(PluginMainWidget):
         plus qu'a RaspberryPi5, plateforme sans roue PySide6 et jamais testee, au prix de
         sept cents lignes et d'une couche de selection de moteur a maintenir. Quand le
         binding manque, le panneau le DIT (cf. _afficher_absence_du_binding).
+
+        `conversation` (un session_id) reprend CETTE conversation par `claude -r <id>`,
+        sans passer par le selecteur — donc sans bandeau de nouvelle session : c'est la
+        voie de `rouvrir_les_sessions`.
         """
         if not konsole_view.DISPONIBLE:
             # Le binding manque : on le DIT dans le panneau plutot que d'echouer en
@@ -1015,8 +1028,12 @@ class PanneauClaude(PluginMainWidget):
         self._debut_derniere_session = time.monotonic()
         vue.demarrer(commande=commande, repertoire=repertoire,
                      environnement=variables)
-        self._lancer(vue, self.commande_claude())
-        self._poser_bandeau(vue)
+        if conversation:
+            self._conversations[vue] = (conversation, repertoire or "")
+            self._lancer(vue, self._commande_nouvelle_session("-r " + conversation))
+        else:
+            self._lancer(vue, self.commande_claude())
+            self._poser_bandeau(vue)
         vue.setFocus()
         self._ajuster_affichage()
         self.update_actions()
@@ -1042,7 +1059,11 @@ class PanneauClaude(PluginMainWidget):
     )
 
     def _commande_nouvelle_session(self, options):
-        """La commande configuree, sans son option de reprise : une session neuve."""
+        """La commande configuree, sans son option de reprise : une session neuve.
+
+        Sert aussi a reprendre UNE conversation donnee (options = « -r <id> ») : retirer le
+        `-r` nu du selecteur est le meme geste.
+        """
         mots = [m for m in self.commande_claude().split()
                 if m not in ("-r", "--resume")] or ["claude"]
         return " ".join(mots + options.split())
@@ -1453,12 +1474,71 @@ class PanneauClaude(PluginMainWidget):
             self._dernieres_fenetres = fenetres
             self._bandeau.poser_fenetres(fenetres)
 
+        self._memoriser_les_sessions()
+
         vitesses = usage.vitesses_par_onglet()
         for vue, identifiant in list(self._identifiants.items()):
             valeur = vitesses.get(identifiant)
             if valeur != self._dernieres_vitesses.get(vue):
                 self._dernieres_vitesses[vue] = valeur
                 self._appliquer_vitesse(vue, valeur)
+
+    #: Cle de configuration des conversations a rouvrir : [[session_id, dossier], ...].
+    CLE_SESSIONS = "sessions_ouvertes"
+
+    def _memoriser_les_sessions(self):
+        """Ecrit dans la configuration les conversations ouvertes, dans l'ordre des vues.
+
+        Demande de l'utilisateur (04/10/2026) : rouvrir au demarrage de Spyder les
+        sessions ouvertes a sa fermeture — « ou de son plantage ». D'ou l'ecriture A
+        CHAQUE CHANGEMENT, sur ce battement, et non a la fermeture : un plantage n'en
+        laisse pas le temps. Garde de changement, comme pour les vitesses : rien ne
+        s'ecrit tant que rien ne bouge.
+
+        La fermeture de Spyder n'efface donc rien, et c'est voulu : `on_close` arrete ce
+        battement AVANT de tuer les sessions, si bien que la liste reste celle d'avant la
+        fermeture. Fermer un onglet, en revanche, le retire au battement suivant.
+
+        L'identifiant vient de claude-statusline.sh (CU_SESSION, cf.
+        usage.sessions_par_onglet) et suit donc un /clear, qui change de conversation.
+        Il est RETENU par vue une fois lu : apres la sortie de claude ou avant le premier
+        passage de la statusline d'une session rouverte, la vue garde sa conversation.
+
+        Muet tant que `rouvrir_les_sessions` n'est pas passe : ce battement (500 ms)
+        demarre au montage du panneau, donc AVANT que la fenetre de Spyder ne soit
+        affichee — il ecrirait une liste vide que la restauration relirait ensuite, et
+        plus rien ne se rouvrirait jamais (cf. test_rien_ne_s_ecrit_avant_la_restauration).
+        """
+        if self._sessions_memorisees is None:
+            return
+        connues = usage.sessions_par_onglet()
+        for vue, identifiant in self._identifiants.items():
+            if identifiant in connues:
+                self._conversations[vue] = connues[identifiant]
+        liste = [list(self._conversations[vue]) for vue in self._vues
+                 if vue in self._conversations]
+        if liste != self._sessions_memorisees:
+            self._sessions_memorisees = liste
+            self.set_conf(self.CLE_SESSIONS, liste)
+
+    def rouvrir_les_sessions(self):
+        """Rouvre les conversations memorisees, et arme la memorisation.
+
+        Appelee une fois, quand la fenetre de Spyder est affichee (plugin.py). Un dossier
+        disparu entre-temps n'est pas a filtrer ici : `VueKonsole.demarrer` l'ignore deja.
+        Une entree illisible (configuration retouchee a la main) est sautee.
+        """
+        a_rouvrir = []
+        for entree in self.get_conf(self.CLE_SESSIONS, []) or []:
+            try:
+                session, dossier = entree
+            except (TypeError, ValueError):
+                continue
+            if session:
+                a_rouvrir.append([session, dossier])
+        self._sessions_memorisees = a_rouvrir
+        for session, dossier in a_rouvrir:
+            self.ouvrir_terminal(dossier, conversation=session)
 
     def _appliquer_vitesse(self, vue, valeur):
         """Le tachymetre de l'onglet ET celui de la cellule de mosaique.
