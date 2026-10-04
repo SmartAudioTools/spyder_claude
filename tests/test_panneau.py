@@ -816,6 +816,45 @@ class TestCompteursDOnglet(unittest.TestCase):
 
 
 
+class TestCoinsDetruitsParQt(FauxRegistre):
+    """`_coins` ne garde JAMAIS un coin que Qt a detruit de son cote.
+
+    `QTabBar.removeTab` detruit lui-meme (deleteLater) les boutons de l'onglet retire :
+    le passage en mosaique, qui retire tous les onglets, tuait donc chaque CoinDOnglet
+    en laissant sa reference dans `_coins`. Trace du 04/10/2026, en boucle a chaque
+    changement de vitesse : « Internal C++ object (Compteur) already deleted ».
+    """
+
+    def _en_mosaique_coins_detruits(self):
+        vue = self._session("aaa")
+        self._session("bbb")
+        self.p._rafraichir_les_compteurs()
+        self.assertIn(vue, self.p._coins)
+        self.p._passer_en_mosaique()
+        APP.sendPostedEvents(None, QEvent.DeferredDelete)  # les coins
+        APP.sendPostedEvents(None, QEvent.DeferredDelete)  # leurs cadrans (`destroyed`)
+        return vue
+
+    def test_la_vitesse_en_mosaique_ne_touche_pas_un_coin_detruit(self):
+        vue = self._en_mosaique_coins_detruits()
+        self.assertNotIn(vue, self.p._coins)
+        self.p._appliquer_vitesse(vue, 1234.0)  # levait RuntimeError
+        self.assertEqual(self.p._mosaique.cellule_de(vue)._compteur._valeur, 1234.0)
+
+    def test_fermer_une_session_en_mosaique_apres_destruction_du_coin(self):
+        """Meme reference perimee, autre victime : `_oublier` fait `coin.deleteLater()`."""
+        vue = self._en_mosaique_coins_detruits()
+        self.p._oublier(vue)  # levait RuntimeError
+        self.assertNotIn(vue, self.p._vues)
+
+    def test_le_retour_aux_onglets_regreffe_un_coin_vivant(self):
+        vue = self._en_mosaique_coins_detruits()
+        self.p._revenir_aux_onglets()
+        self.p._rafraichir_les_compteurs()
+        self.p._appliquer_vitesse(vue, 4321.0)
+        self.assertEqual(self.p._coins[vue]._compteur._valeur, 4321.0)
+
+
 class TestReouvertureDesSessions(FauxRegistre):
     """Rouvrir au demarrage les conversations ouvertes a la fermeture ou au plantage
     precedents (demande du 04/10/2026). Meme faux registre que TestRegistreDetat :

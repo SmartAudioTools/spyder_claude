@@ -1575,24 +1575,34 @@ class PanneauClaude(PluginMainWidget):
             if coin is None:
                 continue
             ancien = self._coins.get(vue)
-            if ancien is not None and ancien is not coin:
-                # Regreffe apres un glisser-deposer, ou apres un aller-retour par la
-                # mosaique (onglets -> mosaique -> onglets repose une croix NEUVE sur
-                # CHAQUE onglet) : l'ancien conteneur est orphelin.
-                # ⚠ `try/except`, PAS un appel nu : mesure en direct (31/07/2026) — un
-                # aller-retour mosaique peut deja avoir laisse Qt detruire l'ancien
-                # conteneur par un autre chemin avant que ce battement ne s'execute,
-                # auquel cas `deleteLater()` leve « Internal C++ object already deleted »
-                # et, SANS CE GARDE, le battement suivant retombait sur le MEME
-                # `ancien` perime (jamais remplace dans `self._coins`, l'exception ayant
-                # coupe la methode avant la ligne suivante) : le panneau levait la meme
-                # erreur EN BOUCLE, toutes les 500 ms, sans jamais s'en remettre.
-                try:
+            if ancien is not coin:
+                if ancien is not None:
+                    # Croix NEUVE posee par Spyder sur un onglet reste en place :
+                    # l'ancien conteneur est orphelin, et vivant — un coin detruit par
+                    # Qt a deja quitte `_coins` (cf. `_retirer_le_coin`).
                     ancien.deleteLater()
-                except RuntimeError:
-                    pass
-            self._coins[vue] = coin
+                self._coins[vue] = coin
+                coin.destroyed.connect(
+                    lambda *_, vue=vue, coin=coin: self._retirer_le_coin(vue, coin))
             coin.poser_pleine_echelle(self.vitesse_maximale())
+
+    def _retirer_le_coin(self, vue, coin):
+        """`_coins` ne garde JAMAIS un coin detruit : c'est lui qui se retire, a sa mort.
+
+        ⚠ `QTabBar.removeTab` DETRUIT LUI-MEME (deleteLater) les boutons de l'onglet
+        retire. Le passage en mosaique, qui retire tous les onglets, et le
+        glisser-deposer (`Tabs.move_tab` : removeTab puis insertTab) tuent donc des
+        coins sans passer par ce panneau. Tant que `_coins` gardait leur reference,
+        `_appliquer_vitesse` et `_oublier` levaient « Internal C++ object already
+        deleted » — en mosaique a chaque changement de vitesse, rien n'y regreffant
+        (trace du 04/10/2026). Un `try/except` autour de chaque usage (premiere
+        rustine, 31/07/2026, sur le seul `deleteLater`) laissait la reference perimee
+        en place pour l'usage suivant.
+
+        `is coin` : un coin NEUF peut deja avoir pris la place quand l'ancien meurt.
+        """
+        if self._coins.get(vue) is coin:
+            del self._coins[vue]
 
     def _greffer_le_compteur(self, index):
         """Remplace le widget RightSide de l'onglet `index` par [croix][Compteur].
