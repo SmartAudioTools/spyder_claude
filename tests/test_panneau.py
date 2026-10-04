@@ -334,6 +334,18 @@ class TestBandeauNouvelleSession(unittest.TestCase):
         bandeau = self.p._bandeaux[vue]
         self.assertIs(vue.layout().itemAt(0).widget(), bandeau)
 
+    def test_les_boutons_sont_empiles_verticalement(self):
+        """Demande du 04/10/2026 : « stacké verticalement par horizontalement »."""
+        vue = self._session()
+        self.p._poser_bandeau(vue)
+        self.p.show()
+        self.p._onglets.setCurrentWidget(vue)
+        QApplication.processEvents()
+        boutons = [self._bouton(vue, libelle) for libelle, _o in self.p.NOUVELLES_SESSIONS]
+        for haut, bas in zip(boutons, boutons[1:]):
+            self.assertEqual(haut.x(), bas.x())
+            self.assertGreaterEqual(bas.y(), haut.y() + haut.height())
+
     def test_chaque_bouton_lance_son_role_et_son_modele(self):
         """Demande du 04/10/2026 : « Nouveau Superviseur Fable », « Nouveau worker
         Fable », « Nouveau worker Opus ». Le superviseur est la session NOMMEE

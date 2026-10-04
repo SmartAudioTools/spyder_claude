@@ -67,8 +67,8 @@ import qtawesome as qta
 
 from qtpy.QtCore import QEvent, Qt, QTimer, Signal
 from qtpy.QtGui import QIcon
-from qtpy.QtWidgets import (QApplication, QGraphicsOpacityEffect, QHBoxLayout, QLabel,
-                            QPushButton, QTabBar, QVBoxLayout, QWidget)
+from qtpy.QtWidgets import (QApplication, QGraphicsOpacityEffect, QLabel, QPushButton,
+                            QTabBar, QVBoxLayout, QWidget)
 
 from spyder.widgets.tabs import Tabs
 
@@ -1070,13 +1070,16 @@ class PanneauClaude(PluginMainWidget):
         if not self._commande_est_le_selecteur():
             return
         bandeau = QWidget(vue)
-        ligne = QHBoxLayout(bandeau)
-        ligne.setContentsMargins(0, 0, 0, 0)
+        # Empiles VERTICALEMENT (demande du 04/10/2026, « stacké verticalement par
+        # horizontalement ») : chaque bouton garde la pleine largeur, libelle lisible meme
+        # dans un panneau etroit.
+        pile = QVBoxLayout(bandeau)
+        pile.setContentsMargins(0, 0, 0, 0)
         for libelle, options in self.NOUVELLES_SESSIONS:
             bouton = QPushButton(_(libelle), bandeau)
             bouton.clicked.connect(
                 lambda checked=False, v=vue, o=options: self._nouvelle_session(v, o))
-            ligne.addWidget(bouton)
+            pile.addWidget(bouton)
         vue.layout().insertWidget(0, bandeau)
         self._bandeaux[vue] = bandeau
 
