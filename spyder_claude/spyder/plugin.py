@@ -73,6 +73,13 @@ class GreffonClaude(SpyderDockablePlugin):
         # Apres tout le montage de Spyder : c'est le seul moment ou masquer le burger
         # vide tient (cf. PanneauClaude._masquer_burger_vide).
         widget._masquer_burger_vide()
+        # Une fois l'editeur utilisable, pas avant : ouvrir les sessions coutait ~ 75 ms
+        # sur le fil principal avant que l'editeur ne reponde (mesure du 05/10/2026).
+        from qtpy.QtCore import QTimer
+        QTimer.singleShot(250, self._premieres_sessions)
+
+    def _premieres_sessions(self):
+        widget = self.get_widget()
         # Les conversations ouvertes a la derniere fermeture (ou au dernier plantage)
         # d'abord ; l'instance par defaut seulement s'il n'y en avait aucune.
         widget.rouvrir_les_sessions()

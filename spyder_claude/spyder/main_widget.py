@@ -312,10 +312,15 @@ class PanneauClaude(PluginMainWidget):
         # enfants, donc les sessions ouvertes ensuite prennent le cadre sans qu'on ait a
         # y penser. C'est ce qui remplace la boucle sur les onglets et l'appel a rejouer
         # a chaque ouverture.
-        self.setStyleSheet(
-            "QFrame#terminal_smartos {"
-            f" border: 1px solid {couleur};"
-            f" border-radius: {SpyderPalette.SIZE_BORDER_RADIUS}; }}")
+        feuille = ("QFrame#terminal_smartos {"
+                   f" border: 1px solid {couleur};"
+                   f" border-radius: {SpyderPalette.SIZE_BORDER_RADIUS}; }}")
+        # Seulement si elle CHANGE : cette methode est appelee a chaque changement de focus
+        # de TOUTE l'application (QApplication.focusChanged), et reposer une feuille
+        # identique fait quand meme repolir tout le panneau - 5 ms par appel, 19 appels au
+        # demarrage (mesure du 05/10/2026, banc de demarrage).
+        if feuille != self.styleSheet():
+            self.setStyleSheet(feuille)
         # ⚠ EN MOSAIQUE, CETTE FEUILLE NE SUFFIT PLUS. Elle descend a TOUTES les vues, et
         # elles sont alors toutes affichees : le panneau annoncerait autant de sessions
         # actives qu'il a de cellules. On reprend donc la main vue par vue. En onglets, le
