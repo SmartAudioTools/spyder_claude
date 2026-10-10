@@ -96,6 +96,9 @@ class FausseVue(QWidget):
     def arreter(self, force=False):
         self.arrets.append(force)
 
+    def poser_liseret(self, couleur):
+        self._liseret = couleur
+
     def envoyer(self, texte):
         self.envois.append(texte)
 
@@ -601,6 +604,48 @@ class TestRegistreDetat(FauxRegistre):
         self._session("aaa")
         self.p.relire_le_registre()
         self.assertIsNone(self.p._etats.get(self.p._vues[0]))
+
+    def test_le_fond_osc11_colore_une_session_absente_du_registre(self):
+        """Cas du compte isole (09/10/2026) : son registre ne nomme pas l'onglet, seule la
+        couleur ecrite sur le pty arrive — et le battement suivant ne doit pas l'effacer."""
+        vue = self._session("aaa")
+        self.p._fond_demande(vue, "#3A1414")
+        self.assertEqual(self.p._etats.get(vue), "waiting")
+        self.p.relire_le_registre()
+        self.assertEqual(self.p._etats.get(vue), "waiting")
+        self.p._fond_demande(vue, "#232627")  # le fond normal, rendu en fin de session
+        self.assertEqual(self.p._etats.get(vue), "busy")
+
+    def test_le_fond_osc11_dattente_donne_le_clavier_a_la_session(self):
+        """Compte isole, sans arbitre (10/10/2026) : la session qui attend une reponse
+        passe devant, comme une fenetre Konsole ; la disponibilite, elle, ne vole rien."""
+        vue = self._session("aaa")
+        autre = self._session("bbb")
+        self.p._onglets.setCurrentWidget(autre)
+        self.p._fond_demande(vue, "#14351f")
+        self.assertIs(self.p._onglets.currentWidget(), autre)
+        self.p._fond_demande(vue, "#3a1414")
+        self.assertIs(self.p._onglets.currentWidget(), vue)
+
+    def test_la_session_activee_prend_le_cadre_bleu_double(self):
+        """Le cadre suit focusChanged, muet quand la fenetre n'est pas active (banc
+        offscreen compris) : activer la session doit le bleuir quand meme, trait de la
+        feuille ET second pixel peint par la vue (10/10/2026)."""
+        from spyder.utils.palette import SpyderPalette
+        vue = self._session("aaa")
+        self.p._appliquer_cadre(False)
+        self.assertIsNone(vue._liseret)
+        self.p.activer_session("aaa")
+        self.assertIn("border: 1px solid %s" % SpyderPalette.COLOR_ACCENT_3,
+                      self.p.styleSheet())
+        self.assertEqual(vue._liseret, SpyderPalette.COLOR_ACCENT_3)
+
+    def test_le_registre_garde_la_priorite_sur_le_fond_osc11(self):
+        vue = self._session("aaa")
+        self._declarer("aaa", "idle")
+        self.p.relire_le_registre()
+        self.p._fond_demande(vue, "#3a1414")
+        self.assertEqual(self.p._etats.get(vue), "idle")
 
     def test_une_dictee_deposee_pour_un_onglet_y_est_tapee_puis_validee(self):
         """Compte isole (10/10/2026) : claude-dictee.sh ne peut pas atteindre un onglet du

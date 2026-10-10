@@ -133,6 +133,9 @@ class PanneauClaude(PluginMainWidget):
         self._identifiants_fermes = set()
         #: dernier etat connu de chaque session (waiting / idle / busy / None).
         self._etats = {}
+        #: etat deduit du fond que la session a demande par OSC 11, par vue — le repli
+        #: quand le registre ne la connait pas (cf. _fond_demande).
+        self._etats_osc = {}
         #: derniere vitesse de depense appliquee, par vue (centimes/heure, ou None) —
         #: garde de changement, comme `_etats`, pour ne repeindre le tachymetre que
         #: lorsque la valeur a reellement bouge.
@@ -325,6 +328,11 @@ class PanneauClaude(PluginMainWidget):
         # demarrage (mesure du 05/10/2026, banc de demarrage).
         if feuille != self.styleSheet():
             self.setStyleSheet(feuille)
+        # Le second pixel du trait bleu, peint par la vue elle-meme (cf.
+        # VueKonsole.poser_liseret) : 2 pixels au focus, 1 au repos, sans que la feuille
+        # change l'epaisseur du cadre, donc la taille du terminal.
+        for vue in self._vues:
+            vue.poser_liseret(SpyderPalette.COLOR_ACCENT_3 if focus else None)
         # ⚠ EN MOSAIQUE, CETTE FEUILLE NE SUFFIT PLUS. Elle descend a TOUTES les vues, et
         # elles sont alors toutes affichees : le panneau annoncerait autant de sessions
         # actives qu'il a de cellules. On reprend donc la main vue par vue. En onglets, le
@@ -699,6 +707,7 @@ class PanneauClaude(PluginMainWidget):
         if identifiant:
             self._identifiants_fermes.add(identifiant)
         self._etats.pop(vue, None)
+        self._etats_osc.pop(vue, None)
         self._dernieres_vitesses.pop(vue, None)
         self._conversations.pop(vue, None)
         # Le bandeau de nouvelle session est enfant de la vue, detruit avec elle : seul
@@ -802,6 +811,7 @@ class PanneauClaude(PluginMainWidget):
                 "QFrame#terminal_smartos {"
                 f" border: 1px solid {couleur};"
                 f" border-radius: {SpyderPalette.SIZE_BORDER_RADIUS}; }}")
+            vue.poser_liseret(SpyderPalette.COLOR_ACCENT_3 if a_le_clavier else None)
 
     def _rendre_les_cadres_au_panneau(self):
         """Efface les feuilles par vue, pour que celle du panneau reprenne la main.
@@ -1109,6 +1119,7 @@ class PanneauClaude(PluginMainWidget):
 
         vue.sig_titre.connect(lambda texte, v=vue: self._titre_change(v, texte))
         vue.sig_sortie.connect(lambda v=vue: self._relancer_calme(v))
+        vue.sig_fond.connect(lambda couleur, v=vue: self._fond_demande(v, couleur))
         vue.sig_termine.connect(lambda code, v=vue: self._session_terminee(v, code))
         import time
         self._debut_derniere_session = time.monotonic()
@@ -1535,7 +1546,7 @@ class PanneauClaude(PluginMainWidget):
         """
         etats = etat_instances.etats_par_onglet()
         for vue, identifiant in list(self._identifiants.items()):
-            etat = etats.get(identifiant)
+            etat = etats.get(identifiant, self._etats_osc.get(vue))
             if etat != self._etats.get(vue):
                 self._etats[vue] = etat
                 self._appliquer_etat(vue, etat)
@@ -1723,6 +1734,29 @@ class PanneauClaude(PluginMainWidget):
         coin.adopter_la_croix(actuel)
         return coin
 
+    def _fond_demande(self, vue, couleur):
+        """La session a demande une couleur de fond (OSC 11) : la traduire en etat.
+
+        ⚠ C'EST LE SEUL SIGNAL D'ETAT DU COMPTE ISOLE : son claude-parole.sh n'ecrit dans
+        le registre que CW_STATE et CW_SINCE, jamais CW_SVC ni CW_SESSION (choix delibere
+        de ce compte), donc `etats_par_onglet` n'y rattache aucune entree a un onglet. La
+        couleur qu'il ecrit sur le pty, elle, arrive bien jusqu'ici. Le registre, quand il
+        connait la session, garde la priorite (cf. relire_le_registre).
+
+        Sans registre, pas d'arbitre non plus : c'est donc ici que la session qui passe en
+        attente de reponse prend le clavier, comme claude-window.sh le fait pour une
+        fenetre Konsole du compte principal (« waiting » vole le focus, demande du
+        10/10/2026).
+        """
+        connues = {c.lower(): e for e, c in etat_instances.COULEURS.items() if c}
+        self._etats_osc[vue] = etat = connues.get(couleur.lower(), "busy")
+        if (self._identifiants.get(vue) not in etat_instances.etats_par_onglet()
+                and etat != self._etats.get(vue)):
+            self._etats[vue] = etat
+            self._appliquer_etat(vue, etat)
+            if etat == "waiting":
+                self.activer_session(self._identifiants.get(vue))
+
     def _appliquer_etat(self, vue, etat):
         """Fond du terminal, fond de l'onglet, bandeau de la cellule."""
         if hasattr(vue, "appliquer_schema"):
@@ -1763,9 +1797,10 @@ class PanneauClaude(PluginMainWidget):
     def activer_session(self, identifiant):
         """Donne le clavier a la session designee. Retourne True si elle existe.
 
-        Appelee UNIQUEMENT sur demande de l'arbitre (fichier `focus-pane`), jamais de la
-        propre initiative du panneau : c'est claude-window.sh qui sait laquelle des
-        instances de la machine — panneau ou fenetre — doit parler la premiere.
+        Appelee sur demande de l'arbitre (fichier `focus-pane`) : c'est claude-window.sh
+        qui sait laquelle des instances de la machine — panneau ou fenetre — doit parler
+        la premiere. Seule exception, le compte isole, qui n'a pas d'arbitre : voir
+        `_fond_demande`.
         """
         for vue, identifiant_vue in self._identifiants.items():
             if identifiant_vue != identifiant:
@@ -1781,6 +1816,9 @@ class PanneauClaude(PluginMainWidget):
                 if index >= 0:
                     self._onglets.setCurrentIndex(index)
             vue.setFocus()
+            # Le cadre suit QApplication.focusChanged, qui se tait quand la fenetre n'est
+            # pas active : sans cet appel, la session prenait le clavier sans bleuir.
+            self._appliquer_cadre(True)
             return True
         return False
 
