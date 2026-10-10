@@ -198,6 +198,13 @@ def variables_de_session(identifiant, pid_fenetre):
     hebergee : il lit `/proc/<pid>/environ` du processus claude. Rien d'autre ne le
     distingue — le pty, le shell et l'arbre des processus sont ceux d'un terminal
     ordinaire.
+
+    S'y ajoute CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN : depuis la 2.1.29x, un interrupteur
+    serveur (tengu_pewter_brook) bascule Claude Code en rendu « fullscreen », qui vit sur
+    l'ecran alternatif et defile lui-meme. QTermWidget n'a alors plus aucun historique :
+    sa barre de defilement reste pleine et ne fait rien (10/10/2026). Le binaire teste
+    cette variable AVANT le reglage `tui` et l'interrupteur : rendu classique garanti.
     """
     return {"SPYDER_CLAUDE_PANE": str(identifiant),
-            "SPYDER_CLAUDE_WINDOW": str(pid_fenetre)}
+            "SPYDER_CLAUDE_WINDOW": str(pid_fenetre),
+            "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN": "1"}

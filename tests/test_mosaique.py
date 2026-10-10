@@ -103,6 +103,19 @@ class TestMontage(BaseMosaique):
         self.assertEqual(self.mosaique.cellule_de(elements[0][0]).titre(),
                          "TODO : mosaique")
 
+    def test_un_titre_long_n_impose_pas_sa_largeur(self):
+        """Un titre OSC complet ne doit pas elargir la mosaique : agrandie, elle poussait
+        la fenetre hors de l'ecran, et la fenetre y restait apres la reduction."""
+        elements = self.elements(1)
+        self.mosaique.disposer(elements)
+        cellule = self.mosaique.cellule_de(elements[0][0])
+        self.hote.show()   # le layout ne se recalcule qu'affiche
+        APPLICATION.processEvents()
+        avant = cellule.minimumSizeHint().width()
+        self.mosaique.poser_titre(elements[0][0], "titre de session tres long " * 20)
+        APPLICATION.processEvents()
+        self.assertEqual(cellule.minimumSizeHint().width(), avant)
+
     def test_couleur_posee_sur_le_bandeau(self):
         elements = self.elements(1)
         self.mosaique.disposer(elements)

@@ -129,6 +129,10 @@ class TestVariablesDeSession(unittest.TestCase):
         self.assertEqual(variables["SPYDER_CLAUDE_PANE"], "abc123")
         self.assertEqual(variables["SPYDER_CLAUDE_WINDOW"], "4242")
 
+    def test_rendu_classique_pour_garder_l_historique_du_terminal(self):
+        variables = etat_instances.variables_de_session("abc123", 4242)
+        self.assertEqual(variables["CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN"], "1")
+
     def test_les_couleurs_sont_celles_du_hook(self):
         """Les teintes sont recopiees de claude-window.sh : elles doivent coller.
 

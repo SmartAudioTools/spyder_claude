@@ -143,10 +143,17 @@ class Cellule(QFrame):
         self._etiquette.setTextFormat(Qt.PlainText)
         # `Maximum` et non `Ignored` : l'etiquette ne prend pas plus que son texte, ce qui
         # colle la croix juste derriere lui (demande de l'utilisateur, 27/07/2026 : « pour
-        # chaque session la croix doit etre juste a droite du titre »). Elle reste
-        # RETRECISSABLE — c'est tout ce que `Maximum` autorise en plus de `Fixed` — donc un
-        # titre long ne pousse rien hors de la cellule.
+        # chaque session la croix doit etre juste a droite du titre »).
+        # ⚠ `Maximum` NE SUFFIT PAS a la rendre retrecissable : un QLabel annonce la largeur
+        # de tout son texte comme `minimumSizeHint`, et le layout la respecte. Un titre de
+        # session long (titre OSC complet, 150 caracteres et plus) imposait ainsi 1400 px de
+        # largeur minimale a la mosaique ; le panneau agrandi poussait la fenetre au-dela de
+        # l'ecran, et elle y restait apres la reduction (10/10/2026 : « Reduire le panneau
+        # Claude apres un plein ecran fait deborder la fenetre a droite »). Le minimum
+        # explicite (1 et non 0 : 0 veut dire « pas de minimum » et rend la main au hint)
+        # laisse le titre se tronquer ; l'infobulle le donne en entier.
         self._etiquette.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Fixed)
+        self._etiquette.setMinimumWidth(1)
 
         # LA LIGNE DE TITRE EST UNE LIGNE, pas seulement une etiquette : elle peut
         # accueillir un widget a sa droite. C'est ainsi que le bouton de sortie de la
