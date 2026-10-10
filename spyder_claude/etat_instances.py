@@ -29,7 +29,9 @@ Aucun import Qt ni Spyder ici : c'est ce qui permet de derouler tout le protocol
 test ordinaire, sans serveur graphique ni Spyder installe.
 """
 
+import fcntl
 import os
+import time
 
 
 def dossier_etat():
@@ -189,6 +191,70 @@ def deposer_demande_de_focus(identifiant, dossier=None):
     with open(provisoire, "w", encoding="utf-8") as fichier:
         fichier.write("%s\n" % identifiant)
     os.replace(provisoire, os.path.join(dossier, FICHIER_FOCUS))
+
+
+#: Prefixe des dictees deposees pour un onglet du panneau : `dictee-pane-<identifiant>`,
+#: le texte transcrit dans le fichier. Ecrit par claude-dictee.sh (compte isole) quand la
+#: session porte SPYDER_CLAUDE_PANE — hors du motif `injecter-*` de claude_injection.sh,
+#: qui ne sait atteindre que des onglets Konsole et supprimait la dictee faute d'en trouver.
+PREFIXE_DICTEE = "dictee-pane-"
+
+
+def dictees_a_taper(identifiants, dossier=None):
+    """{identifiant: texte} des dictees deposees pour CES onglets, consommees au passage.
+
+    Seulement les notres : un fichier d'un identifiant inconnu appartient a un autre
+    panneau (une seconde instance de Spyder) et reste en place pour lui. Une dictee se
+    consomme comme une demande de focus — relue, elle serait retapee a chaque battement.
+    """
+    dossier = dossier or dossier_etat()
+    voulus = set(identifiants)
+    dictees = {}
+    try:
+        noms = os.listdir(dossier)
+    except OSError:
+        return dictees
+    for nom in noms:
+        identifiant = nom[len(PREFIXE_DICTEE):]
+        if not nom.startswith(PREFIXE_DICTEE) or identifiant not in voulus:
+            continue
+        chemin = os.path.join(dossier, nom)
+        try:
+            with open(chemin, "r", encoding="utf-8", errors="replace") as fichier:
+                dictees[identifiant] = fichier.read()
+            os.unlink(chemin)
+        except OSError:
+            continue
+    return dictees
+
+
+def tracer_dictee(message, dossier=None):
+    """Une ligne dans le journal des dictees (dictee.log), au format des scripts.
+
+    Sous le meme verrou que tous ses ecrivains (dictee.log.lock, cf. l'audit du
+    04/08/2026 dans claude-dictee.sh) : une ligne ecrite pendant la rotation du journal
+    par un autre processus serait perdue. Silencieux si le journal est inaccessible —
+    c'est un journal, pas la fonction.
+    """
+    dossier = dossier or dossier_etat()
+    try:
+        with open(os.path.join(dossier, "dictee.log.lock"), "a") as verrou:
+            fcntl.flock(verrou, fcntl.LOCK_EX)
+            with open(os.path.join(dossier, "dictee.log"), "a",
+                      encoding="utf-8") as journal:
+                journal.write("%s %s\n" % (time.strftime("%H:%M:%S"), message))
+    except OSError:
+        pass
+
+
+def deposer_dictee(identifiant, texte, dossier=None):
+    """Ce qu'ecrit claude-dictee.sh pour un onglet du panneau. Pour les tests."""
+    dossier = dossier or dossier_etat()
+    os.makedirs(dossier, exist_ok=True)
+    provisoire = os.path.join(dossier, PREFIXE_DICTEE + identifiant + ".tmp")
+    with open(provisoire, "w", encoding="utf-8") as fichier:
+        fichier.write(texte)
+    os.replace(provisoire, os.path.join(dossier, PREFIXE_DICTEE + identifiant))
 
 
 def variables_de_session(identifiant, pid_fenetre):

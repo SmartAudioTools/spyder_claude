@@ -126,6 +126,11 @@ class PanneauClaude(PluginMainWidget):
         self._titres = {}
         #: identifiant de session, par vue — la cle que partage claude-window.sh.
         self._identifiants = {}
+        #: identifiants des onglets fermes depuis le demarrage : une dictee qui arrive pour
+        #: l'un d'eux (micro ouvert, onglet ferme avant la fin de la transcription) est a
+        #: nous, et se jette — elle ne doit ni rester dans le registre ni etre prise pour
+        #: celle d'un autre panneau (cf. etat_instances.dictees_a_taper).
+        self._identifiants_fermes = set()
         #: dernier etat connu de chaque session (waiting / idle / busy / None).
         self._etats = {}
         #: derniere vitesse de depense appliquee, par vue (centimes/heure, ou None) —
@@ -559,6 +564,23 @@ class PanneauClaude(PluginMainWidget):
         """Le widget de coin haut-droit de la barre d'onglets, ou None."""
         return self._onglets.cornerWidget(Qt.TopRightCorner)
 
+    @staticmethod
+    def _differer(parent, delai, rappel):
+        """Rappelle `rappel` dans `delai` ms, par un minuteur ENFANT de `parent`.
+
+        Pas `QTimer.singleShot` avec une lambda : ce minuteur-la n'appartient a personne
+        et survit a l'objet qu'il rappelle — vu au banc le 10/10/2026, le panneau d'un
+        test precedent, deja detruit, se faisait rappeler au premier `processEvents` du
+        suivant (RuntimeError dans un slot, donc abort du processus). Un enfant meurt
+        avec son parent : un onglet ferme pendant la pause emporte sa validation de
+        dictee, un panneau detruit emporte ses rappels de coin.
+        """
+        minuteur = QTimer(parent)
+        minuteur.setSingleShot(True)
+        minuteur.timeout.connect(rappel)
+        minuteur.timeout.connect(minuteur.deleteLater)
+        minuteur.start(delai)
+
     def _poser_bouton_nouveau_dans_le_coin(self, reessaye=False):
         """Pose le « + » dans le coin, a gauche du bouton d'agrandissement.
 
@@ -576,8 +598,8 @@ class PanneauClaude(PluginMainWidget):
         coin = self._coin_des_onglets()
         if coin is None or not hasattr(coin, "addWidget"):
             if not reessaye:
-                        QTimer.singleShot(
-                    0, lambda: self._poser_bouton_nouveau_dans_le_coin(True))
+                self._differer(
+                    self, 0, lambda: self._poser_bouton_nouveau_dans_le_coin(True))
             return
         coin.addWidget(self._bouton_nouveau)
         self._bouton_nouveau.show()
@@ -673,7 +695,9 @@ class PanneauClaude(PluginMainWidget):
         if vue is self._vue_active:
             self._vue_active = None
         self._titres.pop(vue, None)
-        self._identifiants.pop(vue, None)
+        identifiant = self._identifiants.pop(vue, None)
+        if identifiant:
+            self._identifiants_fermes.add(identifiant)
         self._etats.pop(vue, None)
         self._dernieres_vitesses.pop(vue, None)
         self._conversations.pop(vue, None)
@@ -816,8 +840,8 @@ class PanneauClaude(PluginMainWidget):
         coin = self._coin_des_onglets()
         if coin is None or not hasattr(coin, "insertWidget"):
             if not reessaye:
-                QTimer.singleShot(
-                    0, lambda: self._poser_bouton_disposition_dans_le_coin(True))
+                self._differer(
+                    self, 0, lambda: self._poser_bouton_disposition_dans_le_coin(True))
             return
         actions = coin.actions()
         if actions:
@@ -1520,6 +1544,16 @@ class PanneauClaude(PluginMainWidget):
         if cible:
             self.activer_session(cible)
 
+        dictees = etat_instances.dictees_a_taper(
+            set(self._identifiants.values()) | self._identifiants_fermes)
+        for vue, identifiant in list(self._identifiants.items()):
+            if identifiant in dictees:
+                self._taper_la_dictee(vue, dictees.pop(identifiant))
+        for identifiant in dictees:   # ce qui reste visait un onglet ferme
+            etat_instances.tracer_dictee(
+                "panneau : onglet %s ferme avant l'arrivee de la dictee - rien tape"
+                % identifiant)
+
         self._rafraichir_la_consommation()
 
     def _rafraichir_la_consommation(self):
@@ -1749,3 +1783,27 @@ class PanneauClaude(PluginMainWidget):
             vue.setFocus()
             return True
         return False
+
+    #: Pause entre le texte dicte et sa validation, en ms. La meme que claude-dictee.sh
+    #: (0,3 s) pour une fenetre Konsole, et pour la meme raison.
+    PAUSE_VALIDATION_DICTEE = 300
+
+    def _taper_la_dictee(self, vue, texte):
+        """Tape une dictee transcrite dans l'onglet, puis la valide.
+
+        Le compte isole n'a pas de D-Bus : claude-dictee.sh depose le texte sous
+        l'identifiant de l'onglet (cf. etat_instances.dictees_a_taper) et c'est ici
+        qu'il est tape — le panneau joue pour ses onglets le role que claude_injection.sh
+        joue pour les fenetres Konsole, sans ouvrir aucun acces nouveau.
+
+        DEUX FRAPPES, un RETOUR CHARIOT, et une pause entre les deux : les deux pieges
+        constates par claude-dictee.sh le 25/07/2026 valent pour ce pty comme pour
+        sendText. Entree est un CR, pas un LF (un LF est Shift+Entree pour l'invite de
+        Claude Code) ; et texte et CR envoyes d'un bloc sont lus comme un COLLAGE, ou le
+        CR final n'est qu'un retour a la ligne — la validation doit arriver seule.
+
+        Le minuteur est enfant de la vue (`_differer`) : un onglet ferme pendant la
+        pause emporte sa validation avec lui.
+        """
+        vue.envoyer(texte)
+        self._differer(vue, self.PAUSE_VALIDATION_DICTEE, lambda: vue.envoyer("\r"))

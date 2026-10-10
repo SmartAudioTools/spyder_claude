@@ -602,6 +602,38 @@ class TestRegistreDetat(FauxRegistre):
         self.p.relire_le_registre()
         self.assertIsNone(self.p._etats.get(self.p._vues[0]))
 
+    def test_une_dictee_deposee_pour_un_onglet_y_est_tapee_puis_validee(self):
+        """Compte isole (10/10/2026) : claude-dictee.sh ne peut pas atteindre un onglet du
+        panneau par D-Bus, il depose le texte sous l'identifiant de l'onglet. Le texte et
+        sa validation sont deux frappes distinctes, et la validation est un CR."""
+        vue = self._session("aaa")
+        autre = self._session("bbb")
+        etat_instances.deposer_dictee("aaa", "bonjour", self.dossier)
+        etat_instances.deposer_dictee("zzz", "pour un autre panneau", self.dossier)
+        self.p.relire_le_registre()
+        self.assertEqual(vue.envois, ["bonjour"])
+        self.assertEqual(autre.envois, [])
+        fin = time.monotonic() + 3
+        while len(vue.envois) < 2 and time.monotonic() < fin:
+            APP.processEvents()
+        self.assertEqual(vue.envois, ["bonjour", "\r"])
+        self.p.relire_le_registre()
+        self.assertEqual(vue.envois, ["bonjour", "\r"])  # consommee, pas retapee
+        # Un identifiant qui n'est pas a nous reste en place pour son panneau.
+        self.assertTrue(os.path.exists(os.path.join(self.dossier, "dictee-pane-zzz")))
+
+    def test_une_dictee_pour_un_onglet_ferme_est_jetee_et_tracee(self):
+        """Micro ouvert, onglet ferme avant la fin de la transcription : la dictee est a
+        nous, elle ne reste pas dans le registre, et dictee.log dit qu'elle est perdue."""
+        vue = self._session("aaa")
+        self.p._oublier(vue)
+        etat_instances.deposer_dictee("aaa", "trop tard", self.dossier)
+        self.p.relire_le_registre()
+        self.assertEqual(vue.envois, [])
+        self.assertFalse(os.path.exists(os.path.join(self.dossier, "dictee-pane-aaa")))
+        with io.open(os.path.join(self.dossier, "dictee.log"), encoding="utf-8") as journal:
+            self.assertIn("onglet aaa ferme", journal.read())
+
     def test_activer_session_repond_faux_sur_un_identifiant_inconnu(self):
         """L'arbitre peut designer une instance de FENETRE : le panneau doit le dire."""
         self._session("aaa")
