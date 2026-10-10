@@ -52,7 +52,7 @@ TAILLE_BOUTON = 44
 TAILLE_COMPTEUR = 18
 
 
-def dimensionner_compteur(compteur):
+def dimensionner_compteur(compteur, aligne_sur_onglet=True):
     """Donne au tachymetre sa taille, cadran CENTRE SUR LE TEXTE du titre et non sur la ligne.
 
     Le titre ne tombe pas au milieu de sa ligne : en onglets, la feuille de style de Spyder
@@ -64,8 +64,13 @@ def dimensionner_compteur(compteur):
     Une marge haute du double de l'ecart, dans un widget d'autant plus haut, garde ce
     widget centre sur la ligne (ou les layouts le posent) et descend le cadran de l'ecart,
     `Compteur.paintEvent` dessinant dans `contentsRect()`.
+
+    `aligne_sur_onglet` a False : bandeau compact (cf. `Cellule`, `compacte`), dont le
+    titre est centre sur sa ligne — le cadran l'est donc aussi, sans descente.
     """
-    descente = 2 * ((Cellule.RETRAIT_TEXTE_HAUT - Cellule.RETRAIT_TEXTE_BAS) // 2)
+    descente = 0
+    if aligne_sur_onglet:
+        descente = 2 * ((Cellule.RETRAIT_TEXTE_HAUT - Cellule.RETRAIT_TEXTE_BAS) // 2)
     compteur.setContentsMargins(0, descente, 0, 0)
     compteur.setFixedSize(TAILLE_COMPTEUR, TAILLE_COMPTEUR + descente)
 
@@ -132,8 +137,22 @@ class Cellule(QFrame):
     #: avec la vue concernee ; c'est le panneau qui sait arreter une session.
     sig_fermeture_demandee = Signal()
 
-    def __init__(self, vue, titre="", parent=None):
+    def __init__(self, vue, titre="", parent=None, compacte=False):
+        """`compacte` : bandeau au plus bas, pour les rangees sous la premiere.
+
+        Seule la PREMIERE rangee a besoin des 44 px du bandeau : c'est elle qui porte les
+        boutons du panneau (TAILLE_BOUTON) et qui doit s'aligner sur les onglets. Sous
+        elle, ces 44 px ne servaient qu'a separer deux terminaux — 49 px de vide entre
+        eux, poignee et marge comprises (mesure du 10/10/2026 ; demande de l'utilisateur :
+        « reduire un peu l'espace vide vertical entre deux fenetres dans la vue mosaique
+        pour gagner de l'espace »). Toutes les cellules d'une rangee ont le meme reglage,
+        donc leurs terminaux restent alignes.
+        """
         super().__init__(parent)
+        #: Retrait haut du TEXTE : celui de l'onglet, ou le retrait bas en bandeau compact
+        #: (titre centre, plus rien a aligner).
+        self._retrait_haut = (self.RETRAIT_TEXTE_BAS if compacte
+                              else self.RETRAIT_TEXTE_HAUT)
         self.setObjectName("cellule_claude")
         self.setFrameShape(QFrame.NoFrame)
         self.vue = vue
@@ -170,7 +189,8 @@ class Cellule(QFrame):
         # terminal commencerait 27 px plus bas que celui de ses voisines (mesure du
         # 27/07/2026). On la pose sur l'etiquette plutot que sur le layout : c'est elle qui
         # dimensionne la ligne, et le titre s'y centre verticalement tout seul.
-        self._etiquette.setMinimumHeight(TAILLE_BOUTON)
+        if not compacte:
+            self._etiquette.setMinimumHeight(TAILLE_BOUTON)
         self._ligne_titre.addWidget(self._etiquette)
 
         # LA CROIX DE FERMETURE, JUSTE A DROITE DU TITRE et sur sa ligne (demande de
@@ -193,7 +213,8 @@ class Cellule(QFrame):
         # Un remplissage asymetrique decale l'icone de sa MOITIE : 8 px en donnent 4.
         self._bouton_fermer.setStyleSheet(
             "QToolButton { padding: %dpx %dpx 0px 0px; margin: 0px; border: none; }"
-            % (self.DECALAGE_CROIX_BAS, self.DECALAGE_CROIX_GAUCHE))
+            % ((0, 0) if compacte
+               else (self.DECALAGE_CROIX_BAS, self.DECALAGE_CROIX_GAUCHE)))
         self._bouton_fermer.setFixedSize(self._bouton_fermer.iconSize())
         self._bouton_fermer.setToolTip("Fermer cette instance Claude")
         self._bouton_fermer.clicked.connect(self.sig_fermeture_demandee)
@@ -211,7 +232,7 @@ class Cellule(QFrame):
         # n'a pas a survivre a la destruction de sa cellule. `Mosaique.liberer()` n'a donc
         # rien de special a faire pour lui.
         self._compteur = Compteur(self)
-        dimensionner_compteur(self._compteur)
+        dimensionner_compteur(self._compteur, aligne_sur_onglet=not compacte)
         self._ligne_titre.addWidget(self._compteur, 0, Qt.AlignVCenter)
         self._ligne_titre.addStretch(1)
 
@@ -337,7 +358,7 @@ class Cellule(QFrame):
         self._etiquette.setStyleSheet(
             "QLabel#entete_cellule_claude { %s padding: %dpx %dpx %dpx %dpx; "
             "border-radius: 2px; }"
-            % (style, self.RETRAIT_TEXTE_HAUT, self.RETRAIT_TEXTE_COTE,
+            % (style, self._retrait_haut, self.RETRAIT_TEXTE_COTE,
                self.RETRAIT_TEXTE_BAS, self.RETRAIT_TEXTE_COTE))
 
     def liberer(self):
@@ -509,11 +530,11 @@ class Mosaique(QWidget):
         racine.setObjectName("mosaique_claude")
         racine.setChildrenCollapsible(False)
         reste = list(elements)
-        for combien in disposition(len(elements)):
+        for numero, combien in enumerate(disposition(len(elements))):
             rangee = QSplitter(Qt.Horizontal, racine)
             rangee.setChildrenCollapsible(False)
             for vue, titre in reste[:combien]:
-                cellule = Cellule(vue, titre, rangee)
+                cellule = Cellule(vue, titre, rangee, compacte=numero > 0)
                 cellule.poser_icone_fermer(self._icone_fermer)
                 if self._geometrie_croix:
                     cellule.poser_geometrie_croix(*self._geometrie_croix)

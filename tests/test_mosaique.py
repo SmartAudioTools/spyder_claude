@@ -24,7 +24,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from qtpy.QtCore import QEvent  # noqa: E402
 from qtpy.QtWidgets import (QApplication, QVBoxLayout, QWidget)  # noqa: E402
 
-from spyder_claude.mosaique import Cellule, Mosaique, disposition  # noqa: E402
+from spyder_claude.mosaique import (Cellule, Mosaique, TAILLE_BOUTON,  # noqa: E402
+                                    disposition)
 
 
 APPLICATION = QApplication.instance() or QApplication(sys.argv)
@@ -102,6 +103,21 @@ class TestMontage(BaseMosaique):
         self.mosaique.poser_titre(elements[0][0], "TODO : mosaique")
         self.assertEqual(self.mosaique.cellule_de(elements[0][0]).titre(),
                          "TODO : mosaique")
+
+    def test_bandeau_compact_sous_la_premiere_rangee(self):
+        """Sous la premiere rangee, le bandeau n'a plus a loger les boutons de 44 px :
+        il ne doit pas separer deux terminaux d'autant de vide. Les terminaux d'une meme
+        rangee restent alignes."""
+        elements = self.elements(4)   # 2 rangees de 2
+        self.mosaique.disposer(elements)
+        self.hote.show()
+        APPLICATION.processEvents()
+        haut = [self.mosaique.cellule_de(vue) for vue, _ in elements[:2]]
+        bas = [self.mosaique.cellule_de(vue) for vue, _ in elements[2:]]
+        self.assertGreaterEqual(haut[0].vue.y(), TAILLE_BOUTON)
+        self.assertLess(bas[0].vue.y(), TAILLE_BOUTON // 2 + 10)
+        self.assertEqual(haut[0].vue.y(), haut[1].vue.y())
+        self.assertEqual(bas[0].vue.y(), bas[1].vue.y())
 
     def test_un_titre_long_n_impose_pas_sa_largeur(self):
         """Un titre OSC complet ne doit pas elargir la mosaique : agrandie, elle poussait
@@ -402,16 +418,21 @@ class TestAffichage(unittest.TestCase):
         voit sa ligne de titre grandir, et son terminal commence plus bas que celui de ses
         voisines : 27 px d'ecart avec des boutons de 44 (mesure du 27/07/2026). Un
         desalignement se voit bien plus qu'une ligne un peu haute, d'ou l'invariant.
+        PAR RANGEE depuis le 10/10/2026 : les rangees du dessous ont un bandeau compact
+        (cf. Cellule, `compacte`), et c'est entre voisines que l'ecart se voit.
         """
         self.basculer(4)
-        departs = []
+        departs = {}
         for cellule in self.mosaique.cellules():
             haut_cellule = cellule.mapToGlobal(cellule.rect().topLeft()).y()
             haut_vue = cellule.vue.mapToGlobal(cellule.vue.rect().topLeft()).y()
-            departs.append(haut_vue - haut_cellule)
-        self.assertEqual(len(set(departs)), 1,
-                         "les terminaux ne commencent pas tous au meme endroit : %s"
-                         % departs)
+            departs.setdefault(id(cellule.parentWidget()), set()).add(
+                haut_vue - haut_cellule)
+        self.assertEqual(len(departs), 2)
+        for rangee in departs.values():
+            self.assertEqual(len(rangee), 1,
+                             "les terminaux d'une rangee ne commencent pas au meme "
+                             "endroit : %s" % rangee)
 
     def test_les_rangees_ont_la_meme_hauteur(self):
         """Meme chose verticalement, des qu'il y a plus d'une rangee."""
