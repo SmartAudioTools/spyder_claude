@@ -201,6 +201,68 @@ class TestListeDesSessions(unittest.TestCase):
         self.assertEqual(self.p._onglets.count(), 0)
         self.assertEqual(self.p.nombre_de_sessions(), 2)
 
+    def test_retour_aux_onglets_sur_la_session_qui_avait_le_clavier(self):
+        """Demande de l'utilisateur, 10/10/2026 : « le passage en onglet ne va pas sur
+        l'onglet qui a le focus, il le faudrait ». Le retour tombait toujours sur l'onglet 0.
+
+        Le changement de focus est simule par l'appel du slot branche sur
+        `QApplication.focusChanged` : hors ecran, le vrai focus ne se donne pas.
+        """
+        self._ouvrir("a")
+        self._ouvrir("b")
+        troisieme = self._ouvrir("c")
+        self.p._passer_en_mosaique()
+        self.p._suivre_le_focus(None, troisieme)
+        self.p._revenir_aux_onglets()
+        self.assertIs(self.p._onglets.currentWidget(), troisieme)
+
+    def test_retour_aux_onglets_apres_fermeture_de_la_session_active(self):
+        """La vue retenue est fermee : retour sur le premier onglet, pas d'erreur."""
+        premiere = self._ouvrir("a")
+        seconde = self._ouvrir("b")
+        self.p._passer_en_mosaique()
+        self.p._suivre_le_focus(None, seconde)
+        self.p._oublier(seconde)
+        self.p._revenir_aux_onglets()
+        self.assertIs(self.p._onglets.currentWidget(), premiere)
+
+    def test_la_couleur_detat_teint_le_fond_de_longlet(self):
+        """Demande de l'utilisateur, 10/10/2026 : « la coloration de la console ne se
+        repercute pas sur l'onglet en mode onglets, or il le faudrait ».
+
+        Lu sur les PIXELS de la barre, juste a droite du bord gauche de l'onglet (dans
+        le remplissage, avant le texte) ; l'onglet d'une session « busy » garde son fond.
+        """
+        from qtpy.QtGui import QColor
+        attente = self._ouvrir("a")
+        occupee = self._ouvrir("b")
+        self.p.resize(600, 300)
+        self.p.show()
+        for vue, etat in ((attente, "waiting"), (occupee, "busy")):
+            self.p._etats[vue] = etat
+            self.p._appliquer_etat(vue, etat)
+        QApplication.processEvents()
+        barre = self.p._onglets.tabBar()
+        image = barre.grab().toImage()
+
+        def fond(index):
+            cadre = barre.tabRect(index)
+            return image.pixelColor(cadre.left() + 4, cadre.center().y()).name()
+
+        self.assertEqual(fond(0), QColor(etat_instances.COULEURS["waiting"]).name())
+        self.assertNotIn(fond(1), {QColor(c).name()
+                                   for c in etat_instances.COULEURS.values() if c})
+        # La croix de fermeture ne garde pas son carre gris sur l'onglet teinte.
+        bouton = barre.tabButton(0, QTabBar.RightSide)
+        croix = bouton.croix() if hasattr(bouton, "croix") else bouton
+        from spyder.utils.palette import SpyderPalette
+        gris = {QColor(c).name() for c in (SpyderPalette.COLOR_BACKGROUND_4,
+                                           SpyderPalette.COLOR_BACKGROUND_5)}
+        haut_gauche = croix.mapTo(barre, croix.rect().topLeft())
+        pixels = {image.pixelColor(haut_gauche.x() + x, haut_gauche.y() + y).name()
+                  for x in range(croix.width()) for y in range(croix.height())}
+        self.assertFalse(pixels & gris, pixels & gris)
+
     def test_oublier_purge_la_vue(self):
         vue = self._ouvrir()
         self.p._oublier(vue)
@@ -539,17 +601,6 @@ class TestRegistreDetat(FauxRegistre):
         self._session("aaa")
         self.p.relire_le_registre()
         self.assertIsNone(self.p._etats.get(self.p._vues[0]))
-
-    def test_pastille_seulement_pour_les_etats_qui_se_distinguent(self):
-        """« busy » et l'etat inconnu n'en portent pas : une pastille grise partout ne
-        distinguerait plus rien."""
-        # ⚠ `isNull()`, PAS `availableSizes()` : une icone qtawesome est dessinee a la
-        # demande et n'annonce aucune taille disponible, meme quand elle dessine bien
-        # quelque chose. La premiere version du test echouait sur une pastille correcte.
-        self.assertTrue(self.p._pastille("busy").isNull())
-        self.assertTrue(self.p._pastille(None).isNull())
-        self.assertFalse(self.p._pastille("waiting").isNull())
-        self.assertFalse(self.p._pastille("idle").isNull())
 
     def test_activer_session_repond_faux_sur_un_identifiant_inconnu(self):
         """L'arbitre peut designer une instance de FENETRE : le panneau doit le dire."""

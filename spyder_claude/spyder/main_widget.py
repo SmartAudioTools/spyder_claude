@@ -66,9 +66,10 @@ import uuid
 import qtawesome as qta
 
 from qtpy.QtCore import QEvent, Qt, QTimer, Signal
-from qtpy.QtGui import QIcon
+from qtpy.QtGui import QBitmap, QColor, QImage, QPainter, QRegion
 from qtpy.QtWidgets import (QApplication, QGraphicsOpacityEffect, QLabel, QPushButton,
-                            QSizePolicy, QTabBar, QVBoxLayout, QWidget)
+                            QSizePolicy, QStyle, QStyleOptionTab, QStylePainter, QTabBar,
+                            QVBoxLayout, QWidget)
 
 from spyder.widgets.tabs import Tabs
 
@@ -82,12 +83,6 @@ from spyder_claude.compteurs import BandeauUsage
 from spyder_claude.mosaique import Mosaique
 from spyder_claude.spyder.onglet_compteur import CoinDOnglet
 from spyder_claude.spyder.translations import _
-
-
-#: Couleur de la pastille d'etat sur l'onglet. PAS celle du fond : un rond de 12 pixels
-#: en #3a1414 sur une barre d'onglets sombre est invisible. Ce sont les memes teintes,
-#: eclaircies jusqu'a se voir — le fond du terminal, lui, garde les couleurs d'origine.
-PASTILLES = {"waiting": "#e05252", "idle": "#4caf70"}
 
 
 class PanneauClaude(PluginMainWidget):
@@ -125,6 +120,9 @@ class PanneauClaude(PluginMainWidget):
         # ses propres appels, atteindre nos methodes (_rouvrir_si_vide, _appliquer_cadre).
         # Elles doivent trouver des attributs existants, meme vides.
         self._vues = []
+        #: derniere vue qui a eu le clavier : c'est son onglet qu'on montre en quittant la
+        #: mosaique (sinon le retour tombait toujours sur le premier onglet).
+        self._vue_active = None
         self._titres = {}
         #: identifiant de session, par vue — la cle que partage claude-window.sh.
         self._identifiants = {}
@@ -186,6 +184,7 @@ class PanneauClaude(PluginMainWidget):
         # setTabsClosable(True) et branche tabCloseRequested — un seul appel au lieu de
         # deux, et surtout le meme chemin que le panneau de reference.
         self._onglets.set_close_function(self._fermer_onglet)
+        self._onglets.tabBar().installEventFilter(self)  # cf. `_teinter_les_onglets`
         self._appliquer_cadre(focus=False)
 
         # Des maintenant, avant toute session : le jeu de couleurs aux teintes de l'IDE
@@ -335,6 +334,11 @@ class PanneauClaude(PluginMainWidget):
         dedans = bool(nouveau is not None
                       and (nouveau is self or self.isAncestorOf(nouveau)))
         self._appliquer_cadre(dedans)
+        if dedans:
+            for vue in self._vues:
+                if vue is nouveau or vue.isAncestorOf(nouveau):
+                    self._vue_active = vue
+                    break
 
     # ------------------------------------------------------- API PluginMainWidget
 
@@ -488,18 +492,68 @@ class PanneauClaude(PluginMainWidget):
     DEBORDEMENT_DU_COIN = 1
 
     def eventFilter(self, objet, evenement):  # noqa: N802 - API Qt
-        """Un seul garde-fou : le burger vide reste masque.
+        """Le burger vide reste masque ; la barre d'onglets se teint apres s'etre peinte.
 
         Il en gardait un second — replacer le « + » a chaque redimensionnement de la barre
         d'onglets — devenu inutile le jour ou ce bouton est passe dans le coin : Qt l'y
         dispose lui-meme. Le filtre n'est donc plus installe QUE sur le burger (les deux
-        poses sur les onglets ont ete retirees le 31/07/2026, sans effet mesurable).
+        poses sur les onglets ont ete retirees le 31/07/2026, sans effet mesurable). Il y est
+        revenu le 10/10/2026 pour une autre raison : la couleur d'etat des onglets.
         """
         if (objet is getattr(self, "_options_button", None)
                 and evenement.type() == QEvent.Show):
             objet.setVisible(False)
             return True
+        if evenement.type() == QEvent.Paint and isinstance(objet, QTabBar):
+            type(objet).paintEvent(objet, evenement)
+            self._teinter_les_onglets(objet)
+            return True
         return super().eventFilter(objet, evenement)
+
+    def _teinter_les_onglets(self, barre):
+        """Peint la couleur d'etat de chaque session sur le FOND de son onglet.
+
+        Demande de l'utilisateur, 10/10/2026 : « la coloration de la console ne se
+        repercute pas sur l'onglet en mode onglets, or il le faudrait » — la mosaique la
+        portait deja sur le titre de cellule.
+
+        Qt n'a pas de fond par onglet, et la feuille de style de Spyder (qdarkstyle) peint
+        le fond, l'arrondi et le soulignement de l'onglet actif sans exposer leur geometrie.
+        D'ou : la barre se peint normalement, puis, pour chaque onglet colore, sa FORME
+        seule (`CE_TabBarTabShape`) est rendue a part, les pixels de la couleur de son
+        centre — le fond — deviennent un masque, la couleur d'etat est peinte dans ce
+        masque, et le libelle (`CE_TabBarTabLabel`) est redessine par-dessus. Arrondis,
+        bordure de survol et soulignement bleu restent ceux du style. Ecarte : une feuille
+        de style rendant les fonds transparents pour peindre dessous — elle obligeait a
+        recopier les couleurs de fond de qdarkstyle et la geometrie de ses marges.
+        """
+        peintre = None
+        for index in range(barre.count()):
+            couleur = etat_instances.COULEURS.get(
+                self._etats.get(self._onglets.widget(index)))
+            if not couleur:
+                continue
+            if peintre is None:
+                peintre = QStylePainter(barre)
+            option = QStyleOptionTab()
+            barre.initStyleOption(option, index)
+            cadre = option.rect
+            forme = QImage(cadre.size(), QImage.Format_ARGB32_Premultiplied)
+            forme.fill(Qt.transparent)
+            peintre_forme = QPainter(forme)
+            peintre_forme.translate(-cadre.topLeft())
+            barre.style().drawControl(QStyle.CE_TabBarTabShape, option, peintre_forme,
+                                      barre)
+            peintre_forme.end()
+            fond = forme.pixel(forme.width() // 2, forme.height() // 2)
+            masque = QBitmap.fromImage(forme.createMaskFromColor(fond, Qt.MaskOutColor))
+            peintre.save()
+            peintre.setClipRegion(QRegion(masque).translated(cadre.topLeft()))
+            peintre.fillRect(cadre, QColor(couleur))
+            peintre.restore()
+            peintre.drawControl(QStyle.CE_TabBarTabLabel, option)
+        if peintre is not None:
+            peintre.end()
 
     def _coin_des_onglets(self):
         """Le widget de coin haut-droit de la barre d'onglets, ou None."""
@@ -616,6 +670,8 @@ class PanneauClaude(PluginMainWidget):
         """
         if vue in self._vues:
             self._vues.remove(vue)
+        if vue is self._vue_active:
+            self._vue_active = None
         self._titres.pop(vue, None)
         self._identifiants.pop(vue, None)
         self._etats.pop(vue, None)
@@ -935,7 +991,8 @@ class PanneauClaude(PluginMainWidget):
             self._onglets.setTabToolTip(index, titre)
         self._en_mosaique = False
         if self._onglets.count():
-            self._onglets.setCurrentIndex(0)
+            self._onglets.setCurrentIndex(
+                max(0, self._onglets.indexOf(self._vue_active)))
         self._rafraichir_letat_affiche()
 
     def update_actions(self):
@@ -1633,27 +1690,41 @@ class PanneauClaude(PluginMainWidget):
         return coin
 
     def _appliquer_etat(self, vue, etat):
-        """Fond du terminal, pastille de l'onglet, bandeau de la cellule."""
+        """Fond du terminal, fond de l'onglet, bandeau de la cellule."""
         if hasattr(vue, "appliquer_schema"):
             vue.appliquer_schema(etat_instances.SCHEMAS.get(etat))
 
         index = self._onglets.indexOf(vue)
         if index >= 0:
-            self._onglets.setTabIcon(index, self._pastille(etat))
+            self._onglets.tabBar().update()
+            self._accorder_la_croix(index, etat_instances.COULEURS.get(etat))
 
         if self._en_mosaique:
             self._mosaique.poser_couleur(
                 vue, etat_instances.COULEURS.get(etat),
                 self._habillage_cache.get("couleur_texte"))
 
-    @staticmethod
-    def _pastille(etat):
-        couleur = PASTILLES.get(etat)
-        if not couleur:
-            # « busy » et « etat inconnu » ne portent aucune marque : une pastille grise
-            # sur chaque onglet ne distinguerait plus rien.
-            return QIcon()
-        return qta.icon("mdi.circle-medium", color=couleur)
+    def _accorder_la_croix(self, index, couleur):
+        """Donne a la croix de l'onglet `index` le fond teinte par `_teinter_les_onglets`.
+
+        La croix de Spyder (`CloseTabButton`) peint son propre carre de fond, aux deux
+        gris d'onglet du theme qu'elle garde en attributs : sur un onglet colore, elle
+        restait un carre gris. On remplace ces deux gris par la couleur d'etat (ou on les
+        rend a Spyder quand l'etat n'a plus de couleur) ; Spyder continue de les appliquer
+        lui-meme a chaque changement d'onglet. Le survol garde son gris : c'est le retour
+        visuel du clic.
+        """
+        bouton = self._onglets.tabBar().tabButton(index, QTabBar.RightSide)
+        croix = bouton.croix() if isinstance(bouton, CoinDOnglet) else bouton
+        if not hasattr(croix, "_set_background_color"):
+            return
+        if not hasattr(croix, "_fonds_spyder"):
+            croix._fonds_spyder = (croix._selected_tab_color,
+                                   croix._not_selected_tab_color)
+        fonds = (couleur, couleur) if couleur else croix._fonds_spyder
+        croix._selected_tab_color, croix._not_selected_tab_color = fonds
+        croix._tab_color = fonds[index != self._onglets.currentIndex()]
+        croix._set_background_color(croix._tab_color)
 
     def activer_session(self, identifiant):
         """Donne le clavier a la session designee. Retourne True si elle existe.

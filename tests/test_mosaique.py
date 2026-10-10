@@ -737,5 +737,37 @@ class TestTachymetreDeCellule(unittest.TestCase):
         cellule.deleteLater()
 
 
+
+class TestBandeauColoreDeLaPremiereRangee(unittest.TestCase):
+
+    def test_la_couleur_nentoure_que_le_texte(self):
+        """Signale par l'utilisateur, 10/10/2026 : en mosaique, la couleur d'etat du titre
+        prenait « trop de hauteur sur les fenetres du haut » — les 44 px de la rangee,
+        portes par l'etiquette elle-meme. La couleur doit avoir la hauteur de celle d'une
+        rangee compacte, sans deplacer ni le texte (calage sur les onglets) ni le
+        terminal."""
+        mesures = {}
+        for compacte in (False, True):
+            vue = QWidget()
+            cellule = Cellule(vue, "Essai Claude titre", compacte=compacte)
+            cellule.poser_couleur("#3a1414")
+            cellule.resize(400, 200)
+            cellule.show()
+            QApplication.processEvents()
+            image = cellule.grab().toImage()
+            x = cellule._etiquette.geometry().left() + 2   # dans le remplissage, hors texte
+            colore = sum(1 for y in range(image.height())
+                         if image.pixelColor(x, y).name() == "#3a1414")
+            texte = cellule._etiquette.contentsRect()
+            centre = cellule._etiquette.mapTo(cellule, texte.topLeft()).y() \
+                + texte.height() / 2.0
+            mesures[compacte] = (colore, centre, vue.y())
+            cellule.deleteLater()
+        haute, compacte = mesures[False], mesures[True]
+        self.assertGreater(compacte[0], 0)
+        self.assertEqual(haute[0], compacte[0])            # meme hauteur coloree
+        self.assertAlmostEqual(haute[1], 27.5, delta=0.5)  # texte cale sur les onglets
+        self.assertEqual(haute[2], TAILLE_BOUTON)          # terminal sous ses 44 px
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

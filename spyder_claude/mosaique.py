@@ -4,8 +4,8 @@
 DEMANDE D'ORIGINE (TODO - Spyder - plugin Claude.txt) : « il faudrait qu'en mode agrandi
 le panneau, separer les onglets en une mosaique de fenetres ». C'est la reponse au meme
 besoin que la mosaique de fenetres Konsole : voir d'un coup d'oeil laquelle des instances
-attend une reponse. En onglets, l'etat des sessions cachees ne se lit que sur la petite
-pastille de leur onglet ; agrandi, le panneau a la place de les montrer toutes.
+attend une reponse. En onglets, l'etat des sessions cachees ne se lit que sur la couleur
+de leur onglet ; agrandi, le panneau a la place de les montrer toutes.
 
 DEUX REGLES, ET ELLES EXPLIQUENT TOUTE LA FORME DU CODE.
 
@@ -29,8 +29,8 @@ Aucun import Spyder : le module se deroule dans un test offscreen ordinaire.
 import math
 
 from qtpy.QtCore import Qt, Signal
-from qtpy.QtWidgets import (QFrame, QHBoxLayout, QLabel, QSizePolicy, QSplitter,
-                            QStyle, QToolButton, QVBoxLayout, QWidget)
+from qtpy.QtWidgets import (QFrame, QHBoxLayout, QLabel, QSizePolicy, QSpacerItem,
+                            QSplitter, QStyle, QToolButton, QVBoxLayout, QWidget)
 
 from spyder_claude.compteurs import Compteur
 
@@ -190,8 +190,13 @@ class Cellule(QFrame):
         # 27/07/2026). On la pose sur l'etiquette plutot que sur le layout : c'est elle qui
         # dimensionne la ligne, et le titre s'y centre verticalement tout seul.
         if not compacte:
-            self._etiquette.setMinimumHeight(TAILLE_BOUTON)
-        self._ligne_titre.addWidget(self._etiquette)
+            # Les 44 px vont a la RANGEE, pas a l'etiquette : posees sur elle, sa couleur
+            # d'etat remplissait toute la hauteur (« trop de hauteur sur les fenetres du
+            # haut », utilisateur, 10/10/2026). Etiquette centree, et sa marge haute
+            # (`poser_couleur`) garde le texte a la hauteur de celui des onglets.
+            self._ligne_titre.addItem(QSpacerItem(
+                0, TAILLE_BOUTON, QSizePolicy.Minimum, QSizePolicy.Fixed))
+        self._ligne_titre.addWidget(self._etiquette, 0, Qt.AlignVCenter)
 
         # LA CROIX DE FERMETURE, JUSTE A DROITE DU TITRE et sur sa ligne (demande de
         # l'utilisateur, 27/07/2026). Chaque cellule a la sienne : en mosaique il n'y a
@@ -355,10 +360,15 @@ class Cellule(QFrame):
             style = "background-color: transparent;"
         if couleur_texte:
             style += " color: %s;" % couleur_texte
+        # Le retrait haut est fait de MARGE (hors couleur) puis d'un remplissage egal a
+        # celui du bas : la couleur n'entoure que le texte, comme sur les rangees
+        # compactes. Centree dans la rangee de 44 px, l'etiquette met alors le texte au
+        # meme y qu'avant (27,5 : mesure avant/apres, 10/10/2026).
         self._etiquette.setStyleSheet(
-            "QLabel#entete_cellule_claude { %s padding: %dpx %dpx %dpx %dpx; "
-            "border-radius: 2px; }"
-            % (style, self._retrait_haut, self.RETRAIT_TEXTE_COTE,
+            "QLabel#entete_cellule_claude { %s margin-top: %dpx; "
+            "padding: %dpx %dpx %dpx %dpx; border-radius: 2px; }"
+            % (style, self._retrait_haut - self.RETRAIT_TEXTE_BAS,
+               self.RETRAIT_TEXTE_BAS, self.RETRAIT_TEXTE_COTE,
                self.RETRAIT_TEXTE_BAS, self.RETRAIT_TEXTE_COTE))
 
     def liberer(self):
