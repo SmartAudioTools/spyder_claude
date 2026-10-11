@@ -17,7 +17,7 @@ CE QUE SPYDER FAIT DEJA, ET QUE CE GREFFON NE DOIT PAS CASSER (`TabBar`, tabs.py
     la reparente.
 
 CE QUE CE MODULE FAIT : remplace le widget `RightSide` par un petit conteneur
-[croix d'origine][place du Compteur] — le cadran lui-meme est pose par-dessus la barre, a
+[place du Compteur][croix d'origine] — le cadran lui-meme est pose par-dessus la barre, a
 cette place (cf. `CoinDOnglet.__init__`). La croix d'origine est REPARENTEE, pas recreee — sinon la
 connexion `sig_clicked -> tabCloseRequested` posee par Spyder a l'insertion serait perdue.
 Une fois reparentee, son `.parent()` devient CE conteneur, plus la barre : chaque appel
@@ -40,11 +40,12 @@ from qtpy.QtCore import QSize, Qt
 from qtpy.QtWidgets import QHBoxLayout, QWidget
 
 from spyder_claude.compteurs import Compteur
-from spyder_claude.mosaique import TAILLE_COMPTEUR, dimensionner_compteur
+from spyder_claude.mosaique import (ESPACE_COMPTEUR_CROIX, TAILLE_COMPTEUR,
+                                    dimensionner_compteur)
 
 
 class CoinDOnglet(QWidget):
-    """[croix][place du Compteur], installe a la place du widget RightSide d'un onglet.
+    """[place du Compteur][croix], installe a la place du widget RightSide d'un onglet.
 
     Construit SANS croix (cf. `adopter_la_croix`) : voir le commentaire d'ordre de greffe
     ci-dessus, dans le module.
@@ -78,8 +79,9 @@ class CoinDOnglet(QWidget):
         self._taille_croix = croix_prevue.size()
 
         self._disposition = QHBoxLayout(self)
+        # Sans marge a droite : la croix reste a la place qu'elle a dans tous les onglets.
         self._disposition.setContentsMargins(0, 0, 0, 0)
-        self._disposition.setSpacing(2)
+        self._disposition.setSpacing(ESPACE_COMPTEUR_CROIX)
         self._disposition.addSpacing(TAILLE_COMPTEUR)
 
     def adopter_la_croix(self, croix):
@@ -90,9 +92,10 @@ class CoinDOnglet(QWidget):
         """
         self._croix = croix
         croix.setFixedSize(self._taille_croix)  # sinon le layout l'etire a son sizeHint
-        # EN TETE, avant la place du cadran : la croix colle au titre (demande de
-        # l'utilisateur, 04/10/2026 : « a cote du titre, avant le tachymetre »).
-        self._disposition.insertWidget(0, croix, 0, Qt.AlignVCenter)
+        # APRES la place du cadran, au bord de l'onglet comme dans tous les autres :
+        # demande de l'utilisateur, 11/10/2026 : « le tachymetre [...] doit se trouver entre
+        # le titre et la croix de fermeture » (il etait apres elle depuis le 04/10/2026).
+        self._disposition.addWidget(croix, 0, Qt.AlignVCenter)
         croix.show()
 
     def sizeHint(self):  # noqa: N802 - API Qt
@@ -108,8 +111,7 @@ class CoinDOnglet(QWidget):
         cellule etant cale par construction, c'est lui la reference.
         """
         g = self.geometry()
-        x = g.x() + self._taille_croix.width() + self._disposition.spacing()
-        self._compteur.move(x, g.y() + (g.height() - self._compteur.height()) // 2 + 1)
+        self._compteur.move(g.x(), g.y() + (g.height() - self._compteur.height()) // 2 + 1)
         self._compteur.setVisible(self.isVisible())
         self._compteur.raise_()
 

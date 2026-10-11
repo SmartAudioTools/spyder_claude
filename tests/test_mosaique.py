@@ -496,7 +496,7 @@ class TestAffichage(unittest.TestCase):
                         reduire.mapToGlobal(reduire.rect().topLeft()).x(),
                         "le « + » n'est pas a gauche du bouton de reduction")
 
-    def test_le_bloc_titre_croix_compteur_est_soude(self):
+    def test_le_bloc_titre_compteur_croix_est_soude(self):
         """En mosaique il n'y a plus d'onglet, donc plus la croix que l'onglet portait.
 
         Elle va JUSTE A DROITE DU TITRE (consigne du 27/07/2026, apres un premier essai
@@ -504,10 +504,11 @@ class TestAffichage(unittest.TestCase):
         bloc a gauche, et les boutons du panneau — « + », reduction — restaient a
         l'extreme droite.
 
-        Le tachymetre s'est d'abord intercale entre les deux (31/07/2026), puis est passe
-        APRES la croix (04/10/2026 : « la croix [...] a cote du titre, avant le
-        tachymetre »). Le bloc reste soude, en trois pieces : titre -> croix -> compteur,
-        chacune collee a la suivante, et les boutons du panneau restent apres le compteur.
+        Le tachymetre s'est d'abord intercale entre les deux (31/07/2026), est passe APRES
+        la croix (04/10/2026), puis est revenu entre les deux (11/10/2026 : « le
+        tachymetre [...] doit se trouver entre le titre et la croix de fermeture »). Le
+        bloc reste soude, en trois pieces : titre -> compteur -> croix, chacune collee a la
+        suivante, et les boutons du panneau restent apres la croix.
         """
         self.basculer(2)
         for cellule in self.mosaique.cellules():
@@ -517,26 +518,25 @@ class TestAffichage(unittest.TestCase):
             self.assertTrue(croix.isVisible(), "cellule sans croix de fermeture")
             fin_du_titre = (titre.mapToGlobal(titre.rect().topLeft()).x()
                             + titre.width())
-            debut_croix = croix.mapToGlobal(croix.rect().topLeft()).x()
-            fin_de_la_croix = debut_croix + croix.width()
             debut_compteur = compteur.mapToGlobal(compteur.rect().topLeft()).x()
-            self.assertGreaterEqual(debut_croix, fin_du_titre,
-                                    "la croix chevauche le titre")
+            fin_du_compteur = debut_compteur + compteur.width()
+            debut_croix = croix.mapToGlobal(croix.rect().topLeft()).x()
+            self.assertGreaterEqual(debut_compteur, fin_du_titre,
+                                    "le compteur chevauche le titre")
             self.assertLessEqual(
-                debut_croix - fin_du_titre, cellule.MARGE + 1,
-                "la croix est loin du titre (%d px)" % (debut_croix - fin_du_titre))
-            self.assertGreaterEqual(debut_compteur, fin_de_la_croix,
-                                    "le compteur chevauche la croix")
+                debut_compteur - fin_du_titre, cellule.MARGE + 1,
+                "le compteur est loin du titre (%d px)" % (debut_compteur - fin_du_titre))
+            self.assertGreaterEqual(debut_croix, fin_du_compteur,
+                                    "la croix chevauche le compteur")
             self.assertLessEqual(
-                debut_compteur - fin_de_la_croix, cellule.MARGE + 1,
-                "le compteur est loin de la croix (%d px)"
-                % (debut_compteur - fin_de_la_croix))
+                debut_croix - fin_du_compteur, cellule.MARGE + 1,
+                "la croix est loin du compteur (%d px)" % (debut_croix - fin_du_compteur))
             for autre in (self.mosaique._bouton_nouveau,
                           self.mosaique._bouton_reduire):
                 if autre.parentWidget() is cellule:
                     self.assertGreater(
-                        autre.mapToGlobal(autre.rect().topLeft()).x(), debut_compteur,
-                        "un bouton du panneau est passe devant le compteur")
+                        autre.mapToGlobal(autre.rect().topLeft()).x(), debut_croix,
+                        "un bouton du panneau est passe devant la croix")
 
     def test_l_icone_des_croix_survit_aux_redispositions(self):
         """LE piege de cette icone-ci : les croix appartiennent aux CELLULES.
@@ -739,12 +739,12 @@ class TestTachymetreDeCellule(unittest.TestCase):
 
         texte = encre(titre.left(), titre.right())
         self.assertAlmostEqual(texte, encre(cadran.left(), cadran.right()), delta=1.5)
-        # La croix aussi, et l'ordre [titre][croix][cadran] (demande de l'utilisateur,
-        # 04/10/2026 : « la croix [...] a cote du titre, avant le tachymetre »).
+        # La croix aussi, et l'ordre [titre][cadran][croix] (demande de l'utilisateur,
+        # 11/10/2026 : « le tachymetre [...] entre le titre et la croix de fermeture »).
         croix = dans_cellule(cellule._bouton_fermer)
         self.assertAlmostEqual(texte, encre(croix.left(), croix.right()), delta=1.5)
-        self.assertLess(titre.right(), croix.left())
-        self.assertLess(croix.right(), cadran.left())
+        self.assertLess(titre.right(), cadran.left())
+        self.assertLess(cadran.right(), croix.left())
         cellule.deleteLater()
 
 

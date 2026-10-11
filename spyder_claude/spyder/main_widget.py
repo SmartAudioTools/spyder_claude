@@ -1516,13 +1516,16 @@ class PanneauClaude(PluginMainWidget):
     def _sans_temoin(texte):
         """Le titre sans le temoin d'activite que Claude Code met en tete.
 
-        Claude Code prefixe son OSC 2 de « ✳ » au repos et d'un caractere braille anime
-        (U+2800-U+28FF) quand il travaille. En onglets, `_titre_court` garde la FIN : le
-        temoin n'y paraissait que sur un titre court, et en mosaique toujours. Retire
+        Claude Code prefixe son OSC 2 de « ✳ » au repos et d'un caractere anime quand il
+        travaille : braille (U+2800-U+28FF) jusqu'en 2.1.28x, demi-disques ◐ ◑ (U+25D0-U+25D3)
+        depuis (mesure dans le binaire 2.1.296, 11/10/2026 : `B6=["\u25D0","\u25D1"]`). En
+        onglets, `_titre_court` garde la FIN : le temoin n'y paraissait que sur un titre
+        court, et en mosaique toujours. Retire
         partout, a la demande de l'utilisateur (11/10/2026) : « en affichage onglets, il
         n'y a que la fin du nom de visible, il faudrait le supprimer ».
         """
-        if texte and (texte[0] == "\u2733" or "\u2800" <= texte[0] <= "\u28ff"):
+        if texte and (texte[0] == "\u2733" or "\u2800" <= texte[0] <= "\u28ff"
+                      or "\u25d0" <= texte[0] <= "\u25d3"):
             return texte[1:].lstrip()
         return texte
 

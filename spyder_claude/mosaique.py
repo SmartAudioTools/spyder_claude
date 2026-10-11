@@ -52,7 +52,16 @@ TAILLE_BOUTON = 44
 #: TAILLE_BOUTON : c'est un cadran dans la ligne de titre, pas un bouton — et rester en
 #: dessous de la hauteur de la croix (cf. poser_geometrie_croix) garantit qu'il ne
 #: dimensionne jamais la ligne a la place de TAILLE_BOUTON.
-TAILLE_COMPTEUR = 18
+#: Ramene de 18 a 14 le 11/10/2026 : « le tachymetre doit etre plus petit ».
+TAILLE_COMPTEUR = 14
+
+#: Retrait entre la croix et le bord droit de l'onglet d'une cellule. D'abord pose apres le
+#: cadran (11/10/2026 : « il faut prevoir une petite marge a droite du tachymetre », il
+#: touchait le contour) ; la croix a pris sa place au bord le meme jour.
+MARGE_DROITE_ONGLET = 5
+
+#: Espace entre le cadran et la croix, en mosaique comme en onglets (onglet_compteur.py).
+ESPACE_COMPTEUR_CROIX = 2
 
 #: Double de l'ecart entre le texte d'un onglet de Spyder et son centre : cf.
 #: `dimensionner_compteur`.
@@ -255,12 +264,14 @@ class Cellule(QFrame):
         self._onglet = _Onglet(self)
         self._onglet.setObjectName("onglet_cellule_claude")
         dans_onglet = QHBoxLayout(self._onglet)
-        # A droite, le cadran ne doit pas toucher le bord de l'onglet.
-        dans_onglet.setContentsMargins(0, 0, self.MARGE, self.DEBORD_ONGLET)
+        # A droite, la croix ne doit pas toucher le bord de l'onglet.
+        dans_onglet.setContentsMargins(0, 0, MARGE_DROITE_ONGLET, self.DEBORD_ONGLET)
         # Sans espacement : le retrait droit de l'etiquette suffit, et la croix tombe a la
         # meme distance du texte qu'en mode onglets (banc du 11/10/2026).
         dans_onglet.setSpacing(0)
         dans_onglet.addWidget(self._etiquette, 0, Qt.AlignVCenter)
+        #: Le tachymetre, entre le titre et la croix ; rempli plus bas (cf. self._compteur).
+        place_compteur = dans_onglet.count()
         self._ligne_titre.addWidget(self._onglet, 0, Qt.AlignBottom)
         #: Couleurs de l'onglet : fond d'etat (`poser_couleur`), cadre et fond de la vue
         #: (`poser_cadre`). Gardees pour reconstruire la feuille quand l'une change.
@@ -286,9 +297,11 @@ class Cellule(QFrame):
         self._bouton_fermer.clicked.connect(self.sig_fermeture_demandee)
         dans_onglet.addWidget(self._bouton_fermer, 0, Qt.AlignVCenter)
 
-        # LE TACHYMETRE DE LA CONVERSATION, APRES LA CROIX (place d'abord entre le titre
-        # et la croix, demande du 31/07/2026 ; deplace le 04/10/2026 : « la croix de
-        # fermeture [doit] etre a cote du titre, avant le tachymetre »). Taille fixe et
+        # LE TACHYMETRE DE LA CONVERSATION, ENTRE LE TITRE ET LA CROIX (demande du
+        # 31/07/2026 ; passe apres la croix le 04/10/2026 : « la croix de fermeture [doit]
+        # etre a cote du titre, avant le tachymetre » ; revenu entre les deux le 11/10/2026 :
+        # « le tachymetre [...] doit se trouver entre le titre et la croix de
+        # fermeture »). Taille fixe et
         # petite : c'est un cadran dessine en fraction de son propre canevas (cf.
         # compteurs.Compteur), centre verticalement — pas une icone de bouton, qui se
         # calerait en haut comme `poser_widget_de_titre` le fait pour les boutons du
@@ -300,7 +313,8 @@ class Cellule(QFrame):
         # DANS l'onglet depuis le 11/10/2026, comme en mode onglets (onglet_compteur.py).
         self._compteur = Compteur(self)
         dimensionner_compteur(self._compteur, aligne_sur_onglet=False)
-        dans_onglet.addWidget(self._compteur, 0, Qt.AlignVCenter)
+        dans_onglet.insertWidget(place_compteur, self._compteur, 0, Qt.AlignVCenter)
+        dans_onglet.insertSpacing(place_compteur + 1, ESPACE_COMPTEUR_CROIX)
         self._ligne_titre.addStretch(1)
 
         # ⚠ LA LIGNE DE TITRE ET LE TERMINAL N'ONT PAS LES MEMES MARGES, ET C'EST VOULU.

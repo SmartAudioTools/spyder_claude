@@ -509,6 +509,8 @@ class TestBandeauNouvelleSession(unittest.TestCase):
         retire = self.p._sans_temoin
         self.assertEqual(retire("\u2733 Claude Code"), "Claude Code")
         self.assertEqual(retire("\u2802 TODO Spyder"), "TODO Spyder")
+        self.assertEqual(retire("\u25d0 TODO Spyder"), "TODO Spyder")  # 2.1.29x
+        self.assertEqual(retire("\u25d1 TODO Spyder"), "TODO Spyder")
         self.assertEqual(retire("zsh"), "zsh")
         vue = self._session()
         self.p._titre_change(vue, "\u2810 court")
@@ -914,9 +916,9 @@ class TestCompteursDOnglet(unittest.TestCase):
         APP.processEvents()
         coin = barre.tabButton(0, QTabBar.RightSide)
         croix = coin.croix().geometry().translated(coin.pos())
-        # Ordre [titre][croix][cadran] : demande de l'utilisateur, 04/10/2026, « la
-        # croix [...] a cote du titre, avant le tachymetre ».
-        self.assertLess(croix.right(), coin._compteur.geometry().left())
+        # Ordre [titre][cadran][croix] : demande de l'utilisateur, 11/10/2026, « le
+        # tachymetre [...] entre le titre et la croix de fermeture ».
+        self.assertLess(coin._compteur.geometry().right(), croix.left())
         self.assertEqual(barre.tabRect(0).height(), hauteur_avant)
 
     def test_le_cadran_tombe_sur_le_texte_de_longlet(self):
