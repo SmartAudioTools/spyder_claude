@@ -21,7 +21,7 @@ import unittest
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from qtpy.QtCore import QEvent  # noqa: E402
+from qtpy.QtCore import QEvent, QPoint, QRect  # noqa: E402
 from qtpy.QtWidgets import (QApplication, QVBoxLayout, QWidget)  # noqa: E402
 
 from spyder_claude.mosaique import (Cellule, Mosaique, TAILLE_BOUTON,  # noqa: E402
@@ -107,15 +107,19 @@ class TestMontage(BaseMosaique):
     def test_bandeau_compact_sous_la_premiere_rangee(self):
         """Sous la premiere rangee, le bandeau n'a plus a loger les boutons de 44 px :
         il ne doit pas separer deux terminaux d'autant de vide. Les terminaux d'une meme
-        rangee restent alignes."""
+        rangee restent alignes.
+
+        11/10/2026 : l'onglet de titre deborde de DEBORD_ONGLET px sur le cadre du terminal
+        (`_LigneSousOnglet`), donc le terminal de la premiere rangee commence a
+        TAILLE_BOUTON - DEBORD_ONGLET."""
         elements = self.elements(4)   # 2 rangees de 2
         self.mosaique.disposer(elements)
         self.hote.show()
         APPLICATION.processEvents()
         haut = [self.mosaique.cellule_de(vue) for vue, _ in elements[:2]]
         bas = [self.mosaique.cellule_de(vue) for vue, _ in elements[2:]]
-        self.assertGreaterEqual(haut[0].vue.y(), TAILLE_BOUTON)
-        self.assertLess(bas[0].vue.y(), TAILLE_BOUTON // 2 + 10)
+        self.assertGreaterEqual(haut[0].vue.y(), TAILLE_BOUTON - Cellule.DEBORD_ONGLET)
+        self.assertLess(bas[0].vue.y(), haut[0].vue.y())   # 32 contre 42 px (onglet haut partout, 11/10/2026)
         self.assertEqual(haut[0].vue.y(), haut[1].vue.y())
         self.assertEqual(bas[0].vue.y(), bas[1].vue.y())
 
@@ -133,10 +137,12 @@ class TestMontage(BaseMosaique):
         self.assertEqual(cellule.minimumSizeHint().width(), avant)
 
     def test_couleur_posee_sur_le_bandeau(self):
+        """11/10/2026 : la couleur d'etat est posee sur l'onglet (`_onglet`) qui porte le
+        titre et la croix, plus sur l'etiquette."""
         elements = self.elements(1)
         self.mosaique.disposer(elements)
         self.mosaique.poser_couleur(elements[0][0], "#3a1414", "#DFE1E2")
-        feuille = self.mosaique.cellule_de(elements[0][0])._etiquette.styleSheet()
+        feuille = self.mosaique.cellule_de(elements[0][0])._onglet.styleSheet()
         self.assertIn("#3a1414", feuille)
 
     def test_redisposer_ne_perd_personne(self):
@@ -716,8 +722,13 @@ class TestTachymetreDeCellule(unittest.TestCase):
         cellule.poser_vitesse(2500)
         QApplication.processEvents()
         image = cellule.grab().toImage()
-        titre = cellule._etiquette.geometry()
-        cadran = cellule._compteur.geometry()
+        # 11/10/2026 : titre, croix et cadran sont enfants de `_onglet` ; leur geometry()
+        # est relative a lui, d'ou la conversion en coordonnees de cellule.
+        def dans_cellule(widget):
+            return QRect(widget.mapTo(cellule, QPoint(0, 0)), widget.size())
+
+        titre = dans_cellule(cellule._etiquette)
+        cadran = dans_cellule(cellule._compteur)
 
         def encre(x0, x1):
             fond = image.pixelColor(x0, 0).lightness()
@@ -730,7 +741,7 @@ class TestTachymetreDeCellule(unittest.TestCase):
         self.assertAlmostEqual(texte, encre(cadran.left(), cadran.right()), delta=1.5)
         # La croix aussi, et l'ordre [titre][croix][cadran] (demande de l'utilisateur,
         # 04/10/2026 : « la croix [...] a cote du titre, avant le tachymetre »).
-        croix = cellule._bouton_fermer.geometry()
+        croix = dans_cellule(cellule._bouton_fermer)
         self.assertAlmostEqual(texte, encre(croix.left(), croix.right()), delta=1.5)
         self.assertLess(titre.right(), croix.left())
         self.assertLess(croix.right(), cadran.left())
@@ -743,9 +754,13 @@ class TestBandeauColoreDeLaPremiereRangee(unittest.TestCase):
     def test_la_couleur_nentoure_que_le_texte(self):
         """Signale par l'utilisateur, 10/10/2026 : en mosaique, la couleur d'etat du titre
         prenait « trop de hauteur sur les fenetres du haut » — les 44 px de la rangee,
-        portes par l'etiquette elle-meme. La couleur doit avoir la hauteur de celle d'une
-        rangee compacte, sans deplacer ni le texte (calage sur les onglets) ni le
-        terminal."""
+        portes par l'etiquette elle-meme. La couleur ne doit entourer que l'onglet de titre,
+        sans deplacer ni le texte (calage sur les onglets) ni le terminal.
+
+        11/10/2026 : la couleur est posee sur `_onglet`, qui a la hauteur d'un onglet du
+        mode onglets (retrait vertical 7), dans TOUTES les rangees depuis le 11/10/2026
+        (« tout passer comme en haut ») : meme hauteur en rangee compacte, donc meme
+        espace entre titre et terminal, et bien en dessous des 44 px de la rangee."""
         mesures = {}
         for compacte in (False, True):
             vue = QWidget()
@@ -755,7 +770,7 @@ class TestBandeauColoreDeLaPremiereRangee(unittest.TestCase):
             cellule.show()
             QApplication.processEvents()
             image = cellule.grab().toImage()
-            x = cellule._etiquette.geometry().left() + 2   # dans le remplissage, hors texte
+            x = cellule._etiquette.mapTo(cellule, QPoint(2, 0)).x()   # dans le remplissage, hors texte
             colore = sum(1 for y in range(image.height())
                          if image.pixelColor(x, y).name() == "#3a1414")
             texte = cellule._etiquette.contentsRect()
@@ -765,9 +780,10 @@ class TestBandeauColoreDeLaPremiereRangee(unittest.TestCase):
             cellule.deleteLater()
         haute, compacte = mesures[False], mesures[True]
         self.assertGreater(compacte[0], 0)
-        self.assertEqual(haute[0], compacte[0])            # meme hauteur coloree
-        self.assertAlmostEqual(haute[1], 27.5, delta=0.5)  # texte cale sur les onglets
-        self.assertEqual(haute[2], TAILLE_BOUTON)          # terminal sous ses 44 px
+        self.assertEqual(haute[0], compacte[0])            # meme onglet dans toutes les rangees
+        self.assertLess(haute[0], TAILLE_BOUTON)           # plus les 44 px de la rangee
+        self.assertAlmostEqual(haute[1], 26.5, delta=0.5)  # texte cale sur les onglets (27.5 avant le 11/10 : l'onglet reserve DEBORD_ONGLET px en bas, le texte monte de 1)
+        self.assertEqual(haute[2], TAILLE_BOUTON - Cellule.DEBORD_ONGLET)  # terminal sous ses 44 px, moins le debord de l'onglet
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -136,7 +136,7 @@ class Compteur(QWidget):
     widgets.py) : une seule geometrie, quelle que soit la taille posee par l'appelant —
     un onglet et une cellule de mosaique lui donnent chacun la leur.
 
-    `None` (non mesurable — silence de plus de SILENCE_MAX, ou juste apres un /clear) ne
+    `None` (non mesurable — moins de deux echantillons, ou juste apres un /clear) ne
     dessine ni remplissage ni aiguille : un cadran ETEINT, jamais une vitesse nulle qui
     rassurerait a tort.
     """

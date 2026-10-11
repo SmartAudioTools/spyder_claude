@@ -140,6 +140,8 @@ class PanneauClaude(PluginMainWidget):
         #: garde de changement, comme `_etats`, pour ne repeindre le tachymetre que
         #: lorsque la valeur a reellement bouge.
         self._dernieres_vitesses = {}
+        #: Moyenne glissante de la depense par onglet (cf. usage.Lisseur).
+        self._lisseur = usage.Lisseur()
         #: dernieres fenetres globales appliquees au bandeau (cf. usage.fenetres()).
         #: None tant qu'aucun battement n'a encore rien lu.
         self._dernieres_fenetres = None
@@ -193,6 +195,16 @@ class PanneauClaude(PluginMainWidget):
         # deux, et surtout le meme chemin que le panneau de reference.
         self._onglets.set_close_function(self._fermer_onglet)
         self._onglets.tabBar().installEventFilter(self)  # cf. `_teinter_les_onglets`
+        # Fond des onglets inactifs : transparent pour l'oeil, mais pas pour le masque de
+        # `_teinter_les_onglets`, qui le reconnait a la couleur du centre de l'onglet. Un
+        # fond VRAIMENT transparent (celui du fork depuis le 11/10/2026) se confond avec les
+        # marges de l'onglet : la teinte les debordait et couvrait le cadre du volet.
+        # Alpha 2 sur 255, pas 1 : Qt lit un alpha <= 1 comme une FRACTION, et
+        # `rgba(0, 0, 0, 1)` donnait des onglets noirs (mesure du 11/10/2026).
+        # Gardee a part : `_appliquer_cadre` y ajoute la couleur du cadre pour l'onglet actif.
+        self._feuille_onglets = (
+            self._onglets.styleSheet()
+            + "QTabBar#pane-tabbar::tab:!selected { background: rgba(0, 0, 0, 2); }")
         self._appliquer_cadre(focus=False)
 
         # Des maintenant, avant toute session : le jeu de couleurs aux teintes de l'IDE
@@ -305,8 +317,10 @@ class PanneauClaude(PluginMainWidget):
         Le `padding` nous est propre : le terminal est OPAQUE et peindrait par-dessus les
         coins arrondis, comme l'ecran de jeu de Pyxel.
         """
+        self._au_focus = focus                  # lu par `_teinter_les_onglets`
         try:
             from spyder.utils.palette import SpyderPalette
+            from spyder.utils.stylesheet import smartos_editor_background
         except ImportError:                     # hors Spyder (tests)
             return
         couleur = (SpyderPalette.COLOR_ACCENT_3 if focus
@@ -321,18 +335,33 @@ class PanneauClaude(PluginMainWidget):
         # a chaque ouverture.
         feuille = ("QFrame#terminal_smartos {"
                    f" border: 1px solid {couleur};"
-                   f" border-radius: {SpyderPalette.SIZE_BORDER_RADIUS}; }}")
+                   f" border-radius: {SpyderPalette.SIZE_BORDER_RADIUS};"
+                   # Coin haut gauche carre : l'onglet actif s'ouvre sur le volet (TABS_PATCH
+                   # du fork, 11/10/2026) ; un coin arrondi laissait une encoche au raccord.
+                   " border-top-left-radius: 0px; }")
+        # L'onglet actif prend la couleur du cadre qu'il prolonge. Sur le conteneur
+        # d'onglets, pas sur le panneau : la propre feuille du conteneur l'emporterait.
+        # Au focus, son fond s'eclaircit tres legerement, comme celui du terminal
+        # (konsole_view.ECLAIRCISSEMENT, demande du 11/10/2026). Son trait reste d'1 pixel,
+        # comme celui des autres volets de Spyder : les 2 pixels sont reserves a la
+        # mosaique (demande du 11/10/2026), ou la barre d'onglets est masquee.
+        epais = (f"background-color: {konsole_view.eclaircir(smartos_editor_background())};"
+                 if focus else "")
+        onglets = (self._feuille_onglets
+                   + "QTabBar#pane-tabbar::tab:selected,"
+                   f" QTabBar#pane-tabbar::tab:selected:hover {{ border-color: {couleur}; {epais} }}")
         # Seulement si elle CHANGE : cette methode est appelee a chaque changement de focus
         # de TOUTE l'application (QApplication.focusChanged), et reposer une feuille
         # identique fait quand meme repolir tout le panneau - 5 ms par appel, 19 appels au
         # demarrage (mesure du 05/10/2026, banc de demarrage).
         if feuille != self.styleSheet():
             self.setStyleSheet(feuille)
-        # Le second pixel du trait bleu, peint par la vue elle-meme (cf.
-        # VueKonsole.poser_liseret) : 2 pixels au focus, 1 au repos, sans que la feuille
-        # change l'epaisseur du cadre, donc la taille du terminal.
+        if onglets != self._onglets.styleSheet():
+            self._onglets.setStyleSheet(onglets)
+        # Le focus de la vue (fond eclairci), sans second pixel : en onglets le trait
+        # reste d'1 pixel ; la mosaique le double, cellule par cellule, ci-dessous.
         for vue in self._vues:
-            vue.poser_liseret(SpyderPalette.COLOR_ACCENT_3 if focus else None)
+            vue.poser_liseret(SpyderPalette.COLOR_ACCENT_3 if focus else None, double=False)
         # ⚠ EN MOSAIQUE, CETTE FEUILLE NE SUFFIT PLUS. Elle descend a TOUTES les vues, et
         # elles sont alors toutes affichees : le panneau annoncerait autant de sessions
         # actives qu'il a de cellules. On reprend donc la main vue par vue. En onglets, le
@@ -546,6 +575,8 @@ class PanneauClaude(PluginMainWidget):
                 self._etats.get(self._onglets.widget(index)))
             if not couleur:
                 continue
+            if self._au_focus and index == barre.currentIndex():
+                couleur = konsole_view.eclaircir(couleur)   # comme le fond du terminal
             if peintre is None:
                 peintre = QStylePainter(barre)
             option = QStyleOptionTab()
@@ -659,13 +690,13 @@ class PanneauClaude(PluginMainWidget):
         deux d'entre eux le jour ou il change.
 
         MEME RAISON POUR LA VITESSE : `_appliquer_vitesse` n'est normalement rappelee que
-        lorsque `usage.vitesses_par_onglet()` rend une valeur DIFFERENTE de la derniere —
+        lorsque `usage.Lisseur.vitesses()` rend une valeur DIFFERENTE de la derniere —
         un garde de changement necessaire pour ne pas repeindre en pure perte a chaque
         battement (cf. `_rafraichir_la_consommation`). Mais juste apres une bascule de
         mode, la cellule de mosaique qui vient de naitre n'a JAMAIS recu la vitesse en
-        cours : si l'echantillon est encore frais (age <= FENETRE_MIN, cf. usage.py), la
-        valeur decrue reste EXACTEMENT la meme d'un battement a l'autre, et le garde
-        supprimerait alors toute reapplication pendant jusqu'a une minute — le cadran
+        cours : la moyenne peut rester EXACTEMENT la meme d'un battement a l'autre (aucun
+        onglet sans echantillon neuf ne bouge plus d'un centime par heure), et le garde
+        supprimerait alors toute reapplication pendant longtemps — le cadran
         resterait eteint alors qu'une vitesse est bel et bien connue.
         """
         self._mosaique.poser_couleur_poignees(
@@ -673,6 +704,10 @@ class PanneauClaude(PluginMainWidget):
         for vue in self._vues:
             self._appliquer_etat(vue, self._etats.get(vue))
             self._appliquer_vitesse(vue, self._dernieres_vitesses.get(vue))
+        # Les cellules renaissent a chaque `disposer` : leurs onglets de titre n'ont pas
+        # encore la couleur du cadre de leur vue.
+        if self._en_mosaique:
+            self._repartir_les_cadres()
 
     def set_maximized_state(self, state):
         """Agrandir le panneau etale les onglets en mosaique ; le reduire les rassemble.
@@ -799,8 +834,10 @@ class PanneauClaude(PluginMainWidget):
         """
         try:
             from spyder.utils.palette import SpyderPalette
-        except ImportError:                     # hors Spyder (tests)
+            from spyder.utils.stylesheet import smartos_editor_background
+        except ImportError:                     # hors Spyder (tests), ou Spyder non patche
             return
+        fond = smartos_editor_background()
         actif = self.focusWidget()
         for vue in self._vues:
             a_le_clavier = bool(actif is not None
@@ -810,8 +847,13 @@ class PanneauClaude(PluginMainWidget):
             vue.setStyleSheet(
                 "QFrame#terminal_smartos {"
                 f" border: 1px solid {couleur};"
-                f" border-radius: {SpyderPalette.SIZE_BORDER_RADIUS}; }}")
+                f" border-radius: {SpyderPalette.SIZE_BORDER_RADIUS};"
+                " border-top-left-radius: 0px; }")
             vue.poser_liseret(SpyderPalette.COLOR_ACCENT_3 if a_le_clavier else None)
+            # Son onglet de titre prolonge ce cadre, comme l'onglet actif son volet.
+            self._mosaique.poser_cadre(
+                vue, couleur, fond,
+                SpyderPalette.COLOR_ACCENT_3 if a_le_clavier else None)
 
     def _rendre_les_cadres_au_panneau(self):
         """Efface les feuilles par vue, pour que celle du panneau reprenne la main.
@@ -1012,7 +1054,6 @@ class PanneauClaude(PluginMainWidget):
         self._mosaique.disposer(self._elements())
         self._en_mosaique = True
         self._rafraichir_letat_affiche()
-        self._repartir_les_cadres()
 
     def _revenir_aux_onglets(self):
         self._rendre_les_cadres_au_panneau()
@@ -1471,6 +1512,20 @@ class PanneauClaude(PluginMainWidget):
             return ""
         return texte if len(texte) <= 24 else "…" + texte[-23:]
 
+    @staticmethod
+    def _sans_temoin(texte):
+        """Le titre sans le temoin d'activite que Claude Code met en tete.
+
+        Claude Code prefixe son OSC 2 de « ✳ » au repos et d'un caractere braille anime
+        (U+2800-U+28FF) quand il travaille. En onglets, `_titre_court` garde la FIN : le
+        temoin n'y paraissait que sur un titre court, et en mosaique toujours. Retire
+        partout, a la demande de l'utilisateur (11/10/2026) : « en affichage onglets, il
+        n'y a que la fin du nom de visible, il faudrait le supprimer ».
+        """
+        if texte and (texte[0] == "\u2733" or "\u2800" <= texte[0] <= "\u28ff"):
+            return texte[1:].lstrip()
+        return texte
+
     def _titre_change(self, vue, texte):
         """Le titre pose par claude-title.sh (OSC 2), vers l'onglet ET la cellule.
 
@@ -1480,6 +1535,7 @@ class PanneauClaude(PluginMainWidget):
         if not texte:
             return
         self._suivre_titre(vue, texte)
+        texte = self._sans_temoin(texte)
         self._titres[vue] = texte
         index = self._onglets.indexOf(vue)
         if index >= 0:
@@ -1587,7 +1643,7 @@ class PanneauClaude(PluginMainWidget):
 
         self._memoriser_les_sessions()
 
-        vitesses = usage.vitesses_par_onglet()
+        vitesses = self._lisseur.vitesses()
         for vue, identifiant in list(self._identifiants.items()):
             valeur = vitesses.get(identifiant)
             if valeur != self._dernieres_vitesses.get(vue):
@@ -1764,35 +1820,14 @@ class PanneauClaude(PluginMainWidget):
 
         index = self._onglets.indexOf(vue)
         if index >= 0:
+            # La croix de fermeture n'a plus a etre accordee : son fond est transparent
+            # au repos (patch_spyder_close_tab_transparent.py, 11/10/2026).
             self._onglets.tabBar().update()
-            self._accorder_la_croix(index, etat_instances.COULEURS.get(etat))
 
         if self._en_mosaique:
             self._mosaique.poser_couleur(
                 vue, etat_instances.COULEURS.get(etat),
                 self._habillage_cache.get("couleur_texte"))
-
-    def _accorder_la_croix(self, index, couleur):
-        """Donne a la croix de l'onglet `index` le fond teinte par `_teinter_les_onglets`.
-
-        La croix de Spyder (`CloseTabButton`) peint son propre carre de fond, aux deux
-        gris d'onglet du theme qu'elle garde en attributs : sur un onglet colore, elle
-        restait un carre gris. On remplace ces deux gris par la couleur d'etat (ou on les
-        rend a Spyder quand l'etat n'a plus de couleur) ; Spyder continue de les appliquer
-        lui-meme a chaque changement d'onglet. Le survol garde son gris : c'est le retour
-        visuel du clic.
-        """
-        bouton = self._onglets.tabBar().tabButton(index, QTabBar.RightSide)
-        croix = bouton.croix() if isinstance(bouton, CoinDOnglet) else bouton
-        if not hasattr(croix, "_set_background_color"):
-            return
-        if not hasattr(croix, "_fonds_spyder"):
-            croix._fonds_spyder = (croix._selected_tab_color,
-                                   croix._not_selected_tab_color)
-        fonds = (couleur, couleur) if couleur else croix._fonds_spyder
-        croix._selected_tab_color, croix._not_selected_tab_color = fonds
-        croix._tab_color = fonds[index != self._onglets.currentIndex()]
-        croix._set_background_color(croix._tab_color)
 
     def activer_session(self, identifiant):
         """Donne le clavier a la session designee. Retourne True si elle existe.

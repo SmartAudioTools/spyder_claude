@@ -119,33 +119,50 @@ class TestFenetres(BaseUsage):
 
 class TestVitesses(BaseUsage):
 
-    def test_une_vitesse_non_mesurable_n_est_pas_une_vitesse_nulle(self):
-        self.assertIsNone(usage.vitesse_decrue(None, 0))
-        self.assertEqual(usage.vitesse_decrue(0, 0), 0.0)
+    def setUp(self):
+        super().setUp()
+        self.lisseur = usage.Lisseur()
+        self.t0 = int(time.time())  # entier, comme CU_HORODATAGE
 
-    def test_la_vitesse_decroit_avec_le_silence(self):
-        pleine = usage.vitesse_decrue(1200, usage.FENETRE_MIN)
-        milieu = usage.vitesse_decrue(
-            1200, (usage.FENETRE_MIN + usage.SILENCE_MAX) / 2)
-        eteinte = usage.vitesse_decrue(1200, usage.SILENCE_MAX)
-        self.assertEqual(pleine, 1200.0)
-        self.assertAlmostEqual(milieu, 600.0, delta=1)
-        self.assertEqual(eteinte, 0.0)
+    def echantillon(self, centimes, age, pane="abc123", pid=None):
+        """Un passage de la statusline il y a `age` s, puis une lecture du panneau."""
+        self.ecrire_usage(pid or os.getpid(), CU_PANE=pane, CU_CENTIMES=centimes,
+                          CU_HORODATAGE=int(self.t0 - age))
+        return self.lisseur.vitesses(dossier=self.registre, maintenant=self.t0)
+
+    def test_un_seul_echantillon_n_est_pas_une_vitesse_nulle(self):
+        self.assertIsNone(self.echantillon(100, 0)["abc123"])
+
+    def test_la_moyenne_porte_sur_la_fenetre_et_non_sur_la_derniere_minute(self):
+        """LE DEFAUT CORRIGE (11/10/2026) : une reponse de 50 centimes dans les cinq
+        minutes donne 600 c/h, pas les 3000 c/h de sa seule minute — ni 0 la suivante."""
+        self.echantillon(0, usage.FENETRE_LISSAGE)
+        self.echantillon(0, 120)
+        self.assertAlmostEqual(self.echantillon(50, 60)["abc123"], 600.0, delta=1)
+        self.t0 += 60  # une minute de silence : l'aiguille descend, sans tomber a 0
+        silence = self.lisseur.vitesses(dossier=self.registre, maintenant=self.t0)
+        self.assertAlmostEqual(silence["abc123"], 500.0, delta=1)
+
+    def test_le_silence_ramene_a_zero(self):
+        self.echantillon(0, 400)
+        self.echantillon(50, 350)
+        self.t0 += usage.FENETRE_LISSAGE
+        self.assertEqual(self.echantillon(50, 0)["abc123"], 0.0)
+
+    def test_un_cout_qui_baisse_repart_de_zero(self):
+        """/clear : on ne sait pas ce qui a ete depense entre-temps."""
+        self.echantillon(500, 200)
+        self.assertIsNone(self.echantillon(10, 0)["abc123"])
+
+    def test_deux_echantillons_rapproches_ne_font_pas_de_pic(self):
+        self.echantillon(0, 5)
+        self.assertAlmostEqual(self.echantillon(10, 0)["abc123"],
+                               10 * 3600 / usage.DUREE_MIN, delta=1)
 
     def test_une_session_hors_spyder_ne_reclame_aucun_onglet(self):
         """CU_PANE vide : la session compte pour les fenetres globales, pas pour un
         onglet — une instance en fenetre Konsole n'a pas de tachymetre a colorer."""
-        self.ecrire_usage(os.getpid(), CU_PANE="", CU_VITESSE=500,
-                          CU_HORODATAGE=int(time.time()))
-        self.assertEqual(usage.vitesses_par_onglet(dossier=self.registre), {})
-
-    def test_une_session_de_panneau_est_indexee_par_onglet(self):
-        maintenant = time.time()
-        self.ecrire_usage(os.getpid(), CU_PANE="abc123", CU_VITESSE=500,
-                          CU_HORODATAGE=int(maintenant))
-        resultat = usage.vitesses_par_onglet(dossier=self.registre, maintenant=maintenant)
-        self.assertEqual(resultat["abc123"], 500.0)
-
+        self.assertEqual(self.echantillon(500, 0, pane=""), {})
 
 
 class TestSessions(BaseUsage):

@@ -96,8 +96,8 @@ class FausseVue(QWidget):
     def arreter(self, force=False):
         self.arrets.append(force)
 
-    def poser_liseret(self, couleur):
-        self._liseret = couleur
+    def poser_liseret(self, couleur, double=True):
+        self._liseret, self._double = couleur, double
 
     def envoyer(self, texte):
         self.envois.append(texte)
@@ -237,6 +237,7 @@ class TestListeDesSessions(unittest.TestCase):
         le remplissage, avant le texte) ; l'onglet d'une session « busy » garde son fond.
         """
         from qtpy.QtGui import QColor
+        from spyder_konsole import konsole_view
         attente = self._ouvrir("a")
         occupee = self._ouvrir("b")
         self.p.resize(600, 300)
@@ -245,6 +246,9 @@ class TestListeDesSessions(unittest.TestCase):
             self.p._etats[vue] = etat
             self.p._appliquer_etat(vue, etat)
         QApplication.processEvents()
+        # Apres processEvents : le panneau montre prend le clavier, et focusChanged
+        # rebleuirait le cadre.
+        self.p._appliquer_cadre(focus=False)
         barre = self.p._onglets.tabBar()
         image = barre.grab().toImage()
 
@@ -253,6 +257,12 @@ class TestListeDesSessions(unittest.TestCase):
             return image.pixelColor(cadre.left() + 4, cadre.center().y()).name()
 
         self.assertEqual(fond(0), QColor(etat_instances.COULEURS["waiting"]).name())
+        # Au focus, l'onglet courant s'eclaircit comme son terminal (demande du 11/10/2026).
+        self.p._appliquer_cadre(focus=True)
+        image = barre.grab().toImage()
+        self.assertEqual(fond(0), konsole_view.eclaircir(etat_instances.COULEURS["waiting"]))
+        self.p._appliquer_cadre(focus=False)
+        image = barre.grab().toImage()
         self.assertNotIn(fond(1), {QColor(c).name()
                                    for c in etat_instances.COULEURS.values() if c})
         # La croix de fermeture ne garde pas son carre gris sur l'onglet teinte.
@@ -262,8 +272,10 @@ class TestListeDesSessions(unittest.TestCase):
         gris = {QColor(c).name() for c in (SpyderPalette.COLOR_BACKGROUND_4,
                                            SpyderPalette.COLOR_BACKGROUND_5)}
         haut_gauche = croix.mapTo(barre, croix.rect().topLeft())
+        # Ligne du haut exclue : au repos, le trait gris du bord de l'onglet la traverse
+        # (c'est le cadre, pas un carre de la croix).
         pixels = {image.pixelColor(haut_gauche.x() + x, haut_gauche.y() + y).name()
-                  for x in range(croix.width()) for y in range(croix.height())}
+                  for x in range(croix.width()) for y in range(1, croix.height())}
         self.assertFalse(pixels & gris, pixels & gris)
 
     def test_oublier_purge_la_vue(self):
@@ -491,6 +503,17 @@ class TestBandeauNouvelleSession(unittest.TestCase):
         self.p._titre_change(vue, "\u2733 Claude Code")
         self.assertNotIn(vue, self.p._bandeaux)
 
+    def test_le_temoin_dactivite_est_retire_du_titre(self):
+        """« ✳ » au repos, braille anime au travail : ni l'onglet ni la cellule ne le
+        montrent (11/10/2026). Un titre sans temoin passe intact."""
+        retire = self.p._sans_temoin
+        self.assertEqual(retire("\u2733 Claude Code"), "Claude Code")
+        self.assertEqual(retire("\u2802 TODO Spyder"), "TODO Spyder")
+        self.assertEqual(retire("zsh"), "zsh")
+        vue = self._session()
+        self.p._titre_change(vue, "\u2810 court")
+        self.assertEqual(self.p._titres[vue], "court")
+
     def test_le_terminal_reste_voile_jusquau_titre_de_claude(self):
         """Demande du 04/10/2026 : rien du terminal avant que Claude ne s'affiche."""
         vue = self._session()
@@ -696,6 +719,18 @@ class TestRegistreDetat(FauxRegistre):
         pid = os.getpid() if pid is None else pid
         usage.deposer_usage(pid, cles, dossier=self.dossier)
 
+    def _premier_echantillon(self, pane):
+        """Ancrage de la moyenne glissante (usage.Lisseur) : 0 centime, il y a 360 s."""
+        self._declarer_usage(CU_PANE=pane, CU_CENTIMES=0,
+                             CU_HORODATAGE=int(time.time()) - 360)
+        self.p.relire_le_registre()
+
+    def _second_echantillon(self, pane):
+        """50 centimes de plus en 360 s : 500 centimes/heure."""
+        self._declarer_usage(CU_PANE=pane, CU_CENTIMES=50,
+                             CU_HORODATAGE=int(time.time()))
+        self.p.relire_le_registre()
+
     def test_relire_le_registre_alimente_le_bandeau(self):
         """Le lecteur doit etre BRANCHE, pas seulement ecrit : preuve que
         `relire_le_registre` appelle bien `usage.fenetres()` et pousse le resultat au
@@ -714,31 +749,30 @@ class TestRegistreDetat(FauxRegistre):
         """Meme preuve que ci-dessus, cote vitesse par conversation — via la mosaique,
         seul support existant tant que le greffon d'onglet n'est pas encore branche."""
         vue = self._session("aaa")
-        self._declarer_usage(CU_PANE="aaa", CU_VITESSE=500,
-                             CU_HORODATAGE=int(time.time()))
+        self._premier_echantillon("aaa")
         self.p._passer_en_mosaique()
-        self.p.relire_le_registre()
+        self._second_echantillon("aaa")
         cellule = self.p._mosaique.cellule_de(vue)
         self.assertIsNotNone(cellule)
-        self.assertEqual(cellule._compteur._valeur, 500.0)
+        self.assertAlmostEqual(cellule._compteur._valeur, 500.0, delta=10)
 
     def test_la_vitesse_deja_connue_suit_le_passage_en_mosaique(self):
         """LA CELLULE NEUVE NE PART PAS A ZERO. Sans repousser `_dernieres_vitesses` dans
         `_rafraichir_letat_affiche` (le meme point d'accroche que `_etats`), le garde de
         changement de `_rafraichir_la_consommation` aurait empeche toute reapplication tant
-        que l'echantillon reste frais (age <= FENETRE_MIN) : la vitesse decrue ne change
+        qu'aucun echantillon neuf n'arrive : la moyenne ne change
         alors pas d'un battement a l'autre, donc rien ne la distingue d'un « pas de
         nouveaute » — la cellule fraichement creee serait restee eteinte jusqu'a une
         minute, sans qu'aucune valeur n'ait pourtant disparu."""
         vue = self._session("aaa")
-        self._declarer_usage(CU_PANE="aaa", CU_VITESSE=500,
-                             CU_HORODATAGE=int(time.time()))
-        self.p.relire_le_registre()  # etabli EN MODE ONGLETS, avant toute mosaique
-        self.assertEqual(self.p._dernieres_vitesses.get(vue), 500.0)
+        self._premier_echantillon("aaa")
+        self._second_echantillon("aaa")  # etabli EN MODE ONGLETS, avant toute mosaique
+        connue = self.p._dernieres_vitesses.get(vue)
+        self.assertAlmostEqual(connue, 500.0, delta=10)
         self.p._passer_en_mosaique()  # aucun nouveau relire_le_registre() apres
         cellule = self.p._mosaique.cellule_de(vue)
         self.assertIsNotNone(cellule)
-        self.assertEqual(cellule._compteur._valeur, 500.0)
+        self.assertEqual(cellule._compteur._valeur, connue)
 
     def test_un_battement_a_vide_ne_repeint_rien(self):
         """LE GARDE-FOU QUI DOIT RESTER SILENCIEUX. Sans registre d'usage, vingt
@@ -902,10 +936,20 @@ class TestCompteursDOnglet(unittest.TestCase):
         onglet = barre.tabRect(0)
         cadran = coin._compteur.geometry()
 
+        # Le fond se prend DANS l'onglet, en bas, et la recherche commence sous son trait
+        # du haut et l'arrondi de ses coins (4 px) : depuis le contour de l'onglet
+        # selectionne (TABS_PATCH du fork, 11/10/2026), l'onglet ne touche plus le haut de
+        # son tabRect, et la ligne `top() + 1` d'origine tombait dans le vide transparent
+        # au-dessus - le trait bleu comptait alors pour de l'encre (texte « a » 11,5).
+        corps = image.pixelColor(onglet.center().x(), onglet.bottom() - 1)
+        haut = next(y for y in range(onglet.top(), onglet.bottom())
+                    if image.pixelColor(onglet.center().x(), y) == corps) + 4
+
         def encre(x0, x1):
-            fond = image.pixelColor(x0, onglet.top() + 1).lightness()
-            lignes = [y for y in range(onglet.top() + 1, onglet.bottom())
-                      if any(abs(image.pixelColor(x, y).lightness() - fond) > 40
+            fond = image.pixelColor(x0, onglet.bottom() - 1).lightness()
+            # Seuil 30 : hors Spyder, le texte est noir sur un fond de luminosite 39.
+            lignes = [y for y in range(haut, onglet.bottom())
+                      if any(abs(image.pixelColor(x, y).lightness() - fond) > 30
                              for x in range(x0, x1))]
             return (min(lignes) + max(lignes)) / 2.0
 

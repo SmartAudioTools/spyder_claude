@@ -42,16 +42,16 @@ from spyder_claude import etat_instances
 #: Prefixe des fichiers d'usage, distinct de "inst-" (etat_instances) dans le meme dossier.
 PREFIXE = "usage-"
 
-#: En dessous de cette duree (s) depuis le dernier calcul, on republie la vitesse
-#: precedente plutot que de recalculer : c'est aussi la duree en dessous de laquelle la
-#: vitesse affichee reste pleine (cf. vitesse_decrue). Doit rester EGALE a la constante du
-#: meme nom dans claude-statusline.sh — c'est le meme calcul, ecrit dans deux langages.
-FENETRE_MIN = 60
+#: Duree (s) sur laquelle le panneau moyenne la depense pour le tachymetre.
+#: CU_VITESSE, calculee par claude-statusline.sh sur la derniere minute, ne sert plus a
+#: l'aiguille : une minute qui contient une reponse vaut 20 a 60 $/h, la suivante 0, et
+#: l'aiguille ne connaissait que ces deux positions (« le tachimetre semble etre toujours a
+#: 0 ou 100% sans valeurs intermediaires », utilisateur, 11/10/2026). Cf. `Lisseur`.
+FENETRE_LISSAGE = 300
 
-#: Au-dela de cette duree (s) sans nouvel echantillon, la vitesse affichee retombe a zero :
-#: une conversation silencieuse ne doit pas garder eternellement l'aiguille de sa derniere
-#: rafale. Interpolation lineaire entre FENETRE_MIN (vitesse pleine) et SILENCE_MAX (zero).
-SILENCE_MAX = 300
+#: Denominateur minimal (s) de la moyenne : deux echantillons a quelques secondes d'ecart,
+#: juste apres l'ouverture, donneraient sinon une vitesse enorme.
+DUREE_MIN = 60
 
 #: Au-dela de cette duree (s) sans nouvel echantillon pour les jauges globales, la valeur
 #: reste affichee mais ESTOMPEE plutot que masquee : un chiffre date est un plancher connu,
@@ -138,44 +138,65 @@ def fenetres(dossier=None, maintenant=None):
     return meilleur
 
 
-def vitesse_decrue(vitesse, age):
-    """La vitesse a AFFICHER, compte tenu du silence depuis le dernier echantillon.
+class Lisseur:
+    """La vitesse de depense par onglet, MOYENNEE sur FENETRE_LISSAGE.
 
-    `vitesse` en centimes/heure, ou None si non mesurable (session muette, ou juste apres
-    un /clear) — None reste None quel que soit l'age, ce n'est pas une vitesse nulle.
+    Tient l'historique (horodatage, CU_CENTIMES) de chaque onglet, puisque le registre ne
+    garde que le dernier echantillon. La vitesse est la depense entre l'echantillon
+    d'ancrage — le plus recent qui date d'au moins FENETRE_LISSAGE — et le dernier, divisee
+    par le temps ecoule jusqu'a MAINTENANT : une conversation qui se tait voit donc son
+    aiguille redescendre d'elle-meme, sans regle de decroissance a part.
 
-    En dessous de FENETRE_MIN, la vitesse mesuree est encore fraiche : on la rend telle
-    quelle. Au-dela, elle decroit lineairement jusqu'a 0 a SILENCE_MAX : une conversation
-    qui s'est tue ne doit pas garder l'aiguille de sa derniere rafale indefiniment.
+    Le cout cumule qui BAISSE (/clear, nouvelle session dans l'onglet) repart d'un
+    historique vide : on ne sait pas ce qui a ete depense entre les deux. Un onglet sans
+    deux echantillons rend None (non mesurable), jamais 0.
+
+    Ecarte : moyenner CU_VITESSE elle-meme. Ses valeurs sont deja des moyennes sur des
+    intervalles inegaux (60 s au moins, bien plus pour une session au repos), et leur
+    moyenne arithmetique ne serait pas une depense par heure.
     """
-    if vitesse is None:
-        return None
-    if age >= SILENCE_MAX:
-        return 0.0
-    if age <= FENETRE_MIN:
-        return float(vitesse)
-    portion = (SILENCE_MAX - age) / (SILENCE_MAX - FENETRE_MIN)
-    return vitesse * portion
 
+    def __init__(self):
+        self._historiques = {}
 
-def vitesses_par_onglet(dossier=None, maintenant=None):
-    """{identifiant d'onglet (CU_PANE): vitesse decrue en centimes/heure, ou None}.
+    def vitesses(self, dossier=None, maintenant=None):
+        """{identifiant d'onglet (CU_PANE): centimes/heure, ou None si non mesurable}.
 
-    Ignore les sessions sans CU_PANE (hors panneau Spyder) : elles comptent pour les
-    fenetres globales, mais n'ont pas d'onglet a colorer. C'est la meme forme que
-    etat_instances.etats_par_onglet() : la cle est ce dont le panneau a besoin.
-    """
-    maintenant = maintenant if maintenant is not None else time.time()
-    resultat = {}
-    for valeurs in _lire_usages(dossier).values():
-        pane = valeurs.get("CU_PANE") or ""
-        if not pane:
-            continue
-        horodatage = _entier(valeurs.get("CU_HORODATAGE"), 0)
-        brute = _entier(valeurs.get("CU_VITESSE"), -1)
-        vitesse = None if brute < 0 else brute
-        resultat[pane] = vitesse_decrue(vitesse, maintenant - horodatage)
-    return resultat
+        Ignore les sessions sans CU_PANE (hors panneau Spyder) : elles comptent pour les
+        fenetres globales, mais n'ont pas d'onglet a colorer.
+        """
+        maintenant = maintenant if maintenant is not None else time.time()
+        resultat = {}
+        for valeurs in _lire_usages(dossier).values():
+            pane = valeurs.get("CU_PANE") or ""
+            if not pane:
+                continue
+            resultat[pane] = self._moyenne(
+                pane, _entier(valeurs.get("CU_HORODATAGE"), 0),
+                _entier(valeurs.get("CU_CENTIMES"), -1), maintenant)
+        for pane in list(self._historiques):
+            if pane not in resultat:
+                del self._historiques[pane]
+        return resultat
+
+    def _moyenne(self, pane, horodatage, centimes, maintenant):
+        if centimes < 0 or horodatage <= 0:
+            self._historiques.pop(pane, None)
+            return None
+        historique = self._historiques.setdefault(pane, [])
+        if historique and centimes < historique[-1][1]:
+            historique.clear()
+        if not historique or horodatage > historique[-1][0]:
+            historique.append((horodatage, centimes))
+        # Garde UN echantillon au-dela de la fenetre : c'est lui l'ancrage.
+        limite = maintenant - FENETRE_LISSAGE
+        while len(historique) > 1 and historique[1][0] <= limite:
+            historique.pop(0)
+        if len(historique) < 2:
+            return None
+        (debut, cout_debut), (_, cout_fin) = historique[0], historique[-1]
+        duree = max(maintenant - debut, DUREE_MIN)
+        return (cout_fin - cout_debut) * 3600.0 / duree
 
 
 def sessions_par_onglet(dossier=None):
