@@ -201,7 +201,8 @@ class Cellule(QFrame):
     #: avec la vue concernee ; c'est le panneau qui sait arreter une session.
     sig_fermeture_demandee = Signal()
 
-    def __init__(self, vue, titre="", parent=None, compacte=False):
+    def __init__(self, vue, titre="", parent=None, compacte=False,
+                 hauteur_bandeau=TAILLE_BOUTON):
         """`compacte` : bandeau au plus bas, pour les rangees sous la premiere.
 
         Seule la PREMIERE rangee a besoin des 44 px du bandeau : c'est elle qui porte les
@@ -249,13 +250,16 @@ class Cellule(QFrame):
         # terminal commencerait 27 px plus bas que celui de ses voisines (mesure du
         # 27/07/2026). On la pose sur l'etiquette plutot que sur le layout : c'est elle qui
         # dimensionne la ligne, et le titre s'y centre verticalement tout seul.
-        if not compacte:
+        # `hauteur_bandeau` a 0 : pas de bandeau, la ligne prend la hauteur de l'onglet et
+        # le titre part du haut (dock autonome, 11/10/2026 : « enlever la marge au dessus
+        # des titres des onglets »). Le panneau Spyder garde ses 44 px.
+        if not compacte and hauteur_bandeau:
             # Les 44 px vont a la RANGEE, pas a l'etiquette : posees sur elle, sa couleur
             # d'etat remplissait toute la hauteur (« trop de hauteur sur les fenetres du
             # haut », utilisateur, 10/10/2026). Etiquette centree, et sa marge haute
             # (`poser_couleur`) garde le texte a la hauteur de celui des onglets.
             self._ligne_titre.addItem(QSpacerItem(
-                0, TAILLE_BOUTON, QSizePolicy.Minimum, QSizePolicy.Fixed))
+                0, hauteur_bandeau, QSizePolicy.Minimum, QSizePolicy.Fixed))
         # LE TITRE ET SA CROIX FORMENT UN ONGLET, ouvert sur la vue comme l'onglet actif
         # sur son volet. Demande de l'utilisateur (11/10/2026) : « il faut mettre en place
         # le meme dispositif avec le titre et les fenetres en mode mosaique ». Cale EN BAS
@@ -532,6 +536,9 @@ class Mosaique(QWidget):
     #: taille minimale ne morde pas (cf. `egaliser`). Qt normalise a la place reelle.
     PART_EGALE = 1000000
 
+    #: Hauteur du bandeau de la premiere rangee (cf. `Cellule`). 0 : pas de bandeau, la
+    #: ligne a la hauteur de l'onglet. A poser avant `disposer`.
+    hauteur_bandeau = TAILLE_BOUTON
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -643,7 +650,8 @@ class Mosaique(QWidget):
             rangee = QSplitter(Qt.Horizontal, racine)
             rangee.setChildrenCollapsible(False)
             for vue, titre in reste[:combien]:
-                cellule = Cellule(vue, titre, rangee, compacte=numero > 0)
+                cellule = Cellule(vue, titre, rangee, compacte=numero > 0,
+                                  hauteur_bandeau=self.hauteur_bandeau)
                 cellule.poser_icone_fermer(self._icone_fermer)
                 if self._geometrie_croix:
                     cellule.poser_geometrie_croix(*self._geometrie_croix)

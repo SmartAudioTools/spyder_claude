@@ -14,12 +14,13 @@ import os
 import shutil
 import sys
 import tempfile
+import time
 import unittest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from qtpy.QtCore import QSettings, Signal  # noqa: E402
+from qtpy.QtCore import QSettings, Qt, Signal  # noqa: E402
 from qtpy.QtWidgets import QApplication, QTabBar, QVBoxLayout, QWidget  # noqa: E402
 
 APP = QApplication.instance() or QApplication([])
@@ -42,6 +43,7 @@ class FausseVue(QWidget):
         self.envois = []
         self.demarrages = []
         self.schemas = []
+        self.liserets = []
         self.pids = (42, 42)
         disposition = QVBoxLayout(self)
         disposition.addWidget(QWidget(self))
@@ -57,6 +59,9 @@ class FausseVue(QWidget):
 
     def appliquer_schema(self, nom):
         self.schemas.append(nom)
+
+    def poser_liseret(self, couleur, double=True):
+        self.liserets.append((couleur, double))
 
     def pid_shell(self):
         return self.pids[0]
@@ -75,6 +80,9 @@ class Banc(unittest.TestCase):
         self.temporaire = tempfile.mkdtemp()
         self._xdg = os.environ.get("XDG_RUNTIME_DIR")
         os.environ["XDG_RUNTIME_DIR"] = self.temporaire
+        # Jamais le spyder.ini reel : la reprise y lit les sessions de SmartPythonEditor.
+        self._confdir = os.environ.get("SPYDER_CONFDIR")
+        os.environ["SPYDER_CONFDIR"] = os.path.join(self.temporaire, "spyder-py3")
         self.chemin_reglages = os.path.join(self.temporaire, "claude-dock.ini")
         self.fenetres = []
 
@@ -88,6 +96,10 @@ class Banc(unittest.TestCase):
             os.environ.pop("XDG_RUNTIME_DIR", None)
         else:
             os.environ["XDG_RUNTIME_DIR"] = self._xdg
+        if self._confdir is None:
+            os.environ.pop("SPYDER_CONFDIR", None)
+        else:
+            os.environ["SPYDER_CONFDIR"] = self._confdir
         shutil.rmtree(self.temporaire, ignore_errors=True)
 
     def reglages(self, **valeurs):
@@ -98,9 +110,12 @@ class Banc(unittest.TestCase):
         reglages.sync()
         return reglages
 
-    def fenetre(self, **valeurs):
+    def fenetre(self, theme=None, **valeurs):
+        # Jamais le vrai claude-voix.sh : un script absent, que `TestTitre` remplace.
         fenetre = FenetreClaude(reglages=self.reglages(**valeurs), dossier=self.temporaire,
-                                fabrique_vue=FausseVue)
+                                fabrique_vue=FausseVue, theme=theme,
+                                script_voix=getattr(self, "script_voix",
+                                                    os.path.join(self.temporaire, "absent")))
         self.fenetres.append(fenetre)
         return fenetre
 
@@ -242,6 +257,22 @@ class TestReprise(Banc):
         # Elle reste memorisee : l'autre dock peut l'avoir fermee au prochain lancement.
         self.assertEqual(f._sessions_memorisees, [["deja-prise", "/a"], ["libre", "/b"]])
 
+    def test_rouvre_aussi_celles_de_smartpythoneditor(self):
+        """« les sessions de SmartPythonEditor ne sont pas réouvertes » (utilisateur,
+        11/10/2026) : celles de son spyder.ini, apres celles du dock, sans doublon."""
+        dossier = os.path.join(os.environ["SPYDER_CONFDIR"], "config")
+        os.makedirs(dossier)
+        with open(os.path.join(dossier, "spyder.ini"), "w", encoding="utf-8") as ini:
+            ini.write("[claude_pane]\nsessions_ouvertes = "
+                      "[['commune', '/c'], ['de-spyder', '/s']]\n")
+        f = self.fenetre(sessions_ouvertes=json.dumps([["du-dock", "/d"],
+                                                       ["commune", "/c"]]))
+        f.demarrer()
+        self.assertEqual([v.envois for v in f.sessions()],
+                         [["clear; cat -r du-dock\n"], ["clear; cat -r commune\n"],
+                          ["clear; cat -r de-spyder\n"]])
+        self.assertEqual(f.sessions()[2].demarrages[0][1], "/s")
+
     def test_entree_illisible_ignoree(self):
         f = self.fenetre(sessions_ouvertes="pas du json")
         f.demarrer()
@@ -254,6 +285,221 @@ class TestReprise(Banc):
         f.ouvrir_session()
         f.relire_le_registre()
         self.assertEqual(json.loads(f._reglages.value("sessions_ouvertes")), [["x", "/x"]])
+
+
+class TestRendu(Banc):
+    """« la barre de titre de SmartPythonEditor n'a pas la couleur de fond, les poignés non
+    plus, tu n'encadre pas en bleu comme SmartPythonEditor » (utilisateur, 11/10/2026).
+    Theme de qdarkstyle : les memes noms de couleurs que SpyderPalette, sans Spyder."""
+
+    FOND = "#123456"
+
+    def theme(self):
+        from qdarkstyle.dark.palette import DarkPalette
+        return {"palette": DarkPalette, "fond": self.FOND, "feuille_onglets": "",
+                "peindre_conges": None}
+
+    def fenetre_visible(self):
+        f = self.fenetre(theme=self.theme())
+        f.show()
+        f.activateWindow()
+        APP.processEvents()
+        return f
+
+    def test_cadre_bleu_quand_le_dock_a_le_clavier(self):
+        from qdarkstyle.dark.palette import DarkPalette as P
+        f = self.fenetre_visible()
+        vue = f.ouvrir_session()
+        APP.processEvents()
+        self.assertIn(P.COLOR_ACCENT_3, f.centralWidget().styleSheet())
+        self.assertIn(P.COLOR_ACCENT_3, f._onglets.styleSheet())
+        self.assertTrue(f._onglets.tabBar().property("smartos_focus"))
+        self.assertEqual(vue.liserets[-1], (P.COLOR_ACCENT_3, False))
+        f._suivre_le_focus(vue, None)          # le clavier quitte la fenetre
+        self.assertIn(P.COLOR_BACKGROUND_4, f.centralWidget().styleSheet())
+        self.assertNotIn(P.COLOR_ACCENT_3, f._onglets.styleSheet())
+        self.assertEqual(vue.liserets[-1], (None, False))
+
+    def test_mosaique_un_seul_cadre_bleu_et_poignees_au_fond(self):
+        from qdarkstyle.dark.palette import DarkPalette as P
+        f = self.fenetre_visible()
+        a, b = f.ouvrir_session(), f.ouvrir_session()
+        f.basculer_mosaique(True)
+        b.setFocus()
+        APP.processEvents()
+        self.assertIn(P.COLOR_ACCENT_3, b.styleSheet())
+        self.assertIn(P.COLOR_BACKGROUND_4, a.styleSheet())
+        self.assertEqual((a.liserets[-1], b.liserets[-1]),
+                         ((None, True), (P.COLOR_ACCENT_3, True)))
+        self.assertIn(P.COLOR_BACKGROUND_1, f._mosaique._racine.styleSheet())
+        f.basculer_mosaique(False)
+        self.assertEqual((a.styleSheet(), b.styleSheet()), ("", ""))
+
+    def test_onglets_en_haut_et_boutons_immobiles_d_une_vue_a_l_autre(self):
+        """« les boutons bougent d'une vue à l'autre . les onglets doivent remonter dans les
+        vue onglets » (utilisateur, 11/10/2026). Les trois regles de PanesTabBarStyleSheet
+        en cause, reproduites ici sans importer Spyder (donc CONF)."""
+        from qtpy.QtCore import QPoint
+        from qtpy.QtWidgets import QTabBar
+        theme = dict(self.theme(), feuille_onglets=(
+            "QTabBar#pane-tabbar::tab { margin-top: 12px; padding: 4px; }"
+            "QTabBar#pane-tabbar QToolButton { margin-top: 12px; }"
+            "QTabWidget::pane { border-top: 0px; top: -1px; }"
+            "QTabWidget::right-corner { top: -1px; right: -1px; }"))
+        f = self.fenetre(theme=theme)
+        f.resize(1000, 500)
+        f.show()
+        f.ouvrir_session(), f.ouvrir_session()
+        APP.processEvents()
+        barre = f._onglets.tabBar()
+        self.assertEqual(barre.tabRect(0).y(), 0)
+        # La marge se loge DANS le rectangle de l'onglet (y reste 0) : c'est sa hauteur qui
+        # la trahit, le texte et ses 2 x 4 px de padding n'y laissant pas place a 12 px de plus.
+        self.assertLess(barre.tabRect(0).height(), barre.fontMetrics().height() + 2 * 4 + 12)
+        # La croix centree dans SON bouton : la marge de la feuille la decalait de 6 px vers le
+        # bas sans changer la geometrie du bouton, d'ou une mesure sur les pixels peints.
+        image = barre.tabButton(0, QTabBar.RightSide).croix().grab().toImage()
+        fond = image.pixel(0, 0)
+        lignes = [y for y in range(image.height())
+                  if any(image.pixel(x, y) != fond for x in range(image.width()))]
+        self.assertTrue(lignes)
+        self.assertLessEqual(abs((lignes[0] + lignes[-1]) / 2 - (image.height() - 1) / 2), 1)
+
+        def positions(boutons):
+            return [b.mapTo(f, QPoint(0, 0)) for b in boutons]
+        coin = f._onglets.cornerWidget().layout()
+        en_onglets = positions(coin.itemAt(i).widget() for i in range(coin.count()))
+        f.basculer_mosaique(True)
+        APP.processEvents()
+        self.assertEqual(positions(f._mosaique._boutons_de_titre), en_onglets)
+
+    def test_sans_theme_ni_cadre_ni_teinte(self):
+        f = self.fenetre()
+        f.ouvrir_session()
+        f.basculer_mosaique(True)
+        self.assertEqual(f.centralWidget().styleSheet(), "")
+        self.assertEqual(f._mosaique._racine.styleSheet(), "")
+
+
+class TestMenuDeDolphin(Banc):
+    """« Nouveau Claude » / « Reprendre Claude » de Dolphin, recus par `ecouter`.
+
+    Le TRANSPORT (socket local, socat) n'est pas exerce ici : le bac a sable de Claude
+    interdit les sockets AF_UNIX. Seul le traitement de la ligne l'est.
+    """
+
+    def fenetre_du_menu(self):
+        f = self.fenetre(commande="claude -r")
+        f.montrees = []
+        f._se_montrer = lambda: f.montrees.append(True)   # jamais de kdotool au banc
+        return f
+
+    def test_lancer_ouvre_une_session_neuve_dans_le_dossier(self):
+        f = self.fenetre_du_menu()
+        self.assertTrue(f.demande_du_menu("lancer\t%s\n" % self.temporaire))
+        vue = f.sessions()[-1]
+        self.assertEqual(vue.demarrages[0][1], self.temporaire)
+        self.assertEqual(vue.envois, ["clear; claude\n"])
+        self.assertEqual(f.montrees, [True])
+
+    def test_reprendre_ouvre_le_selecteur(self):
+        f = self.fenetre_du_menu()
+        self.assertTrue(f.demande_du_menu("reprendre\t%s\n" % self.temporaire))
+        self.assertEqual(f.sessions()[-1].envois, ["clear; claude -r\n"])
+
+    def test_refuse_un_mode_inconnu_ou_un_dossier_absent(self):
+        f = self.fenetre_du_menu()
+        self.assertFalse(f.demande_du_menu("effacer\t%s\n" % self.temporaire))
+        self.assertFalse(f.demande_du_menu("lancer\t/nulle/part\n"))
+        self.assertEqual(f.sessions(), [])
+        self.assertEqual(f.montrees, [])
+
+
+class TestTitre(Banc):
+    """« cacher la barre de titre et reporter les bouton de fenetre à gauche des boutons de
+    bascule mosaique/onglet et + [...] deux boutons, un pour la synthèse vocale et un pour la
+    dictée, indépendants (entre le plus et le boutons de fenetre) [...] elargir la taille des
+    onglets en vue onglet » (utilisateur, 11/10/2026)."""
+
+    def setUp(self):
+        super().setUp()
+        self.registre = os.path.join(self.temporaire, "claude-windows")
+        os.makedirs(self.registre, exist_ok=True)
+        self.appels = os.path.join(self.temporaire, "appels")
+        self.script_voix = os.path.join(self.temporaire, "claude-voix.sh")
+        with open(self.script_voix, "w") as fichier:
+            fichier.write('#!/bin/sh\necho "$@" >> %s\n' % self.appels)
+        os.chmod(self.script_voix, 0o755)
+
+    def temoin(self, nom):
+        open(os.path.join(self.registre, nom), "w").close()
+
+    @staticmethod
+    def rangee(f):
+        coin = f._onglets.cornerWidget(Qt.TopRightCorner)
+        disposition = coin.layout()
+        return [disposition.itemAt(i).widget().toolTip() for i in range(disposition.count())]
+
+    def test_sans_barre_et_boutons_dans_l_ordre(self):
+        f = self.fenetre()
+        self.assertTrue(f.windowFlags() & Qt.FramelessWindowHint)
+        self.assertEqual(self.rangee(f)[:2], ["Ouvrir une instance Claude",
+                                              "Afficher les instances en mosaïque"])
+        self.assertIn("synthèse vocale", self.rangee(f)[2])
+        self.assertIn("dictée", self.rangee(f)[3])
+        self.assertEqual(self.rangee(f)[4:], ["Réduire", "Agrandir / restaurer", "Fermer"])
+        mosaique = f._mosaique._boutons_de_titre
+        self.assertEqual(mosaique[:2], (f._mosaique._bouton_nouveau,
+                                        f._mosaique._bouton_disposition))
+        self.assertEqual([b.toolTip() for b in mosaique[2:]], self.rangee(f)[2:])
+        # Tous de la meme taille, et pas de bandeau au-dessus des onglets de cellule.
+        self.assertEqual({(b.width(), b.height()) for b in mosaique}, {(24, 24)})
+        coin = f._onglets.cornerWidget().layout()
+        self.assertEqual({(coin.itemAt(i).widget().width(), coin.itemAt(i).widget().height()) for i in range(coin.count())},
+                         {(24, 24)})
+        # Le coin couvre toute la barre, rangee en haut : Qt le cale sinon contre le bas.
+        barre = f._onglets.tabBar().sizeHint().height()
+        self.assertGreaterEqual(f._onglets.cornerWidget().sizeHint().height(), barre)
+        self.assertEqual(coin.alignment(), Qt.AlignTop)
+        self.assertEqual(f._mosaique.hauteur_bandeau, 0)
+        self.assertFalse(any(b.isVisible() for b in mosaique))
+
+    def test_titre_entier_et_raccourci_par_la_gauche(self):
+        f = self.fenetre()
+        f.demarrer()
+        titre = "Une conversation au titre nettement plus long que vingt-quatre"
+        f._titre_change(f.sessions()[0], titre)
+        self.assertEqual(f._onglets.tabText(0), titre)
+        self.assertEqual(f._onglets.tabBar().elideMode(), Qt.ElideLeft)
+        self.assertFalse(f._onglets.usesScrollButtons())
+
+    def test_etat_vocal_lu_dans_le_registre(self):
+        f = self.fenetre()
+        self.assertEqual(f.etat_vocal(), {"parole": False, "dictee": False})
+        self.temoin("voix-active")
+        self.temoin("parole-coupee")
+        self.assertEqual(f.etat_vocal(), {"parole": False, "dictee": True})
+        f.relire_le_registre()
+        self.assertIn("Rallumer", f._boutons_vocaux["parole"][0].toolTip())
+        self.assertIn("Couper", f._boutons_vocaux["dictee"][1].toolTip())
+
+    def test_les_boutons_appellent_claude_voix(self):
+        f = self.fenetre()
+        self.temoin("voix-active")
+        f._boutons_vocaux["dictee"][0].click()
+        f.basculer_vocal("parole")
+        for _ in range(500):   # startDetached : attendre le script par son effet
+            if len(self.lignes_appelees()) == 2:
+                break
+            time.sleep(0.01)
+        self.assertEqual(sorted(self.lignes_appelees()), ["--dictee off", "--parole off"])
+
+    def lignes_appelees(self):
+        try:
+            with open(self.appels) as fichier:
+                return fichier.read().splitlines()
+        except FileNotFoundError:
+            return []
 
 
 if __name__ == "__main__":

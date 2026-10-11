@@ -16,36 +16,89 @@ methode, avec les memes noms : un correctif a l'une est a reporter a l'autre (la
 methodes recopiees est dans la note DONE du 11/10/2026, « dock autonome »).
 
 Ce qui DIFFERE du panneau, et pourquoi :
-  - le coin d'onglet (tachymetre + croix) est un widget a nous, pas `CoinDOnglet` : celui-ci
-    adopte la croix que Spyder pose sur chaque onglet, et la croix native de Qt identifie
-    son onglet par l'EMETTEUR du clic — reparentee, son clic serait perdu ;
+  - le coin d'onglet (tachymetre + croix) herite de `CoinDOnglet`, mais lui donne une croix
+    a nous : la croix native de Qt identifie son onglet par l'EMETTEUR du clic — reparentee,
+    son clic serait perdu (cf. `CoinOnglet`) ;
+  - le menu contextuel de Dolphin (« Nouveau Claude », « Reprendre Claude ») ouvre un
+    onglet ICI quand le dock tourne : cf. `ecouter` et `claude_dolphin.sh` ;
   - la reprise ne relance pas une conversation deja ouverte ailleurs (le dock de Spyder
     rouvre aussi les siennes) : cf. `rouvrir_les_sessions` ;
-  - pas de cadre de focus ; la feuille de style, les couleurs du terminal et sa police sont
-    celles de SmartPythonEditor, retrouvees SANS importer Spyder (cf.
-    `appliquer_style_smartpythoneditor`, `police_de_l_editeur`) ;
+  - le RENDU est celui de SmartPythonEditor, pris chez lui et non imite (demande du
+    11/10/2026 : « Je veux quelque chose de beaucoup plus proche du rendu de
+    SmartPythonEditor ! ») : sa feuille d'application, sa palette, la feuille de ses barres
+    d'onglets de volets et le fond de son editeur (cf. `theme_smartpythoneditor`), le
+    cadre bleu au focus (`_appliquer_cadre`, `_repartir_les_cadres`, recopies), les
+    poignees de la mosaique ;
+  - pas de barre de titre, comme SmartPythonEditor (demande du 11/10/2026) : ses boutons
+    de fenetre et ses poignees (spyder_window_controls) a droite du coin des onglets, apres
+    [+][grille] et les interrupteurs de parole et de dictee, independants (cf.
+    `basculer_vocal`) ;
   - la liste des sessions s'ecrit en JSON dans le QSettings : une liste de listes ne
     survit pas telle quelle a un fichier INI.
 """
 
+import ast
+import configparser
 import json
 import os
+import shutil
 import sys
 import time
 import uuid
 
 import qtawesome as qta
-from qtpy.QtCore import QEvent, QSettings, Qt, QTimer
+from qtpy.QtCore import QEvent, QProcess, QSettings, QSize, Qt, QTimer
 from qtpy.QtGui import QBitmap, QColor, QImage, QPainter, QRegion
+from qtpy.QtNetwork import QLocalServer, QLocalSocket
 from qtpy.QtWidgets import (QApplication, QGraphicsOpacityEffect, QHBoxLayout, QLabel,
                             QMainWindow, QPushButton, QSizePolicy, QStyle,
                             QStyleOptionTab, QStylePainter, QTabBar, QTabWidget,
                             QToolButton, QVBoxLayout, QWidget)
 
 from spyder_claude import etat_instances, usage
-from spyder_claude.compteurs import BandeauUsage, Compteur
-from spyder_claude.mosaique import ESPACE_COMPTEUR_CROIX, Mosaique, dimensionner_compteur
+from spyder_claude.compteurs import BandeauUsage
+from spyder_claude.mosaique import Cellule, Mosaique
+from spyder_claude.spyder.onglet_compteur import CoinDOnglet
 from spyder_konsole import konsole_view
+
+try:   # les controles de fenetre de SmartPythonEditor ; absents : barre de titre du systeme
+    from spyder_window_controls.spyder.resize import ResizeGrips
+    from spyder_window_controls.spyder.widgets import HoverButton, glyph_icon, hover_icon
+except ImportError:
+    ResizeGrips = None
+
+
+def chemin_du_canal():
+    """Le socket du dock, ou `claude_dolphin.sh` depose ses demandes (cf. `ecouter`).
+
+    Dans XDG_RUNTIME_DIR, 0700 a l'utilisateur : seul son propre compte peut y ecrire. Un
+    port TCP local a ete ecarte pour cette raison — le compte isole claude pourrait s'y
+    connecter et faire ouvrir des sessions sous le compte de l'utilisateur.
+    """
+    return os.path.join(os.environ.get("XDG_RUNTIME_DIR") or "/tmp", "claude-dock.sock")
+
+
+def _spyder_ini():
+    """Le spyder.ini de SmartPythonEditor, lu par configparser — jamais par CONF (cf.
+    `police_de_l_editeur`). Fichier absent : un parseur vide."""
+    dossier = os.environ.get("SPYDER_CONFDIR") or os.path.expanduser("~/.config/spyder-py3")
+    ini = configparser.RawConfigParser()
+    ini.read(os.path.join(dossier, "config", "spyder.ini"), encoding="utf-8")
+    return ini
+
+
+def sessions_de_smartpythoneditor():
+    """Les conversations que le dock de SmartPythonEditor a memorisees ([session, dossier]).
+
+    `main_widget._memoriser_les_sessions` les ecrit par `set_conf`, dans la section du
+    greffon (`claude_pane`), cle `sessions_ouvertes` : CONF y range la repr Python de la
+    liste. Lecture seule ; illisible ou absente : liste vide.
+    """
+    try:
+        valeur = ast.literal_eval(_spyder_ini().get("claude_pane", "sessions_ouvertes"))
+    except (configparser.Error, ValueError, SyntaxError, OSError):
+        return []
+    return valeur if isinstance(valeur, list) else []
 
 
 def police_de_l_editeur():
@@ -55,13 +108,9 @@ def police_de_l_editeur():
     instancierait CONF, qui peut reecrire ~/.config/spyder-py3 pendant que Spyder tourne.
     `font/family` y est une liste de repli (comme `get_family` de Spyder : la premiere
     installee gagne)."""
-    import ast
-    import configparser
     from qtpy.QtGui import QFontDatabase
-    dossier = os.environ.get("SPYDER_CONFDIR") or os.path.expanduser("~/.config/spyder-py3")
-    ini = configparser.RawConfigParser()
     try:
-        ini.read(os.path.join(dossier, "config", "spyder.ini"), encoding="utf-8")
+        ini = _spyder_ini()
         familles = ini.get("appearance", "font/family")
         taille = ini.getint("appearance", "font/size")
     except (configparser.Error, ValueError, OSError):
@@ -76,41 +125,142 @@ def police_de_l_editeur():
     return famille, (taille if famille else None)
 
 
-def appliquer_style_smartpythoneditor(application):
-    """La feuille de style de SmartPythonEditor : celle de qdarkstyle sur la palette sombre,
-    que `AppStylesheet` de Spyder reprend telle quelle avant ses retouches de police. Rend
-    la palette (couleurs du terminal), ou None sans qdarkstyle."""
+def theme_smartpythoneditor(application):
+    """Le rendu de SmartPythonEditor, pris CHEZ LUI : sa feuille d'application (qdarkstyle
+    et les retouches SmartOS du fork : separateurs au fond de l'editeur, volets eclaircis
+    au focus), sa palette, la feuille de ses barres d'onglets de volets, le fond de son
+    editeur et le conge qu'il peint au pied de l'onglet actif.
+
+    ⚠ JAMAIS CONTRE LA VRAIE CONFIGURATION. Ces objets lisent CONF, et instancier CONF peut
+    reecrire ~/.config/spyder-py3 — que Spyder, s'il tourne, reecrira a son tour en se
+    fermant. CONF est donc instancie sur une COPIE de spyder.ini (SPYDER_CONFDIR, pose avant
+    le premier import de spyder), puis la variable est retiree de l'environnement : les
+    shells des sessions en heriteraient, et un Spyder lance depuis l'une d'elles prendrait
+    la copie. CONF garde ses chemins : il n'en relit plus la variable.
+
+    Rend un dict (palette, fond, feuille_onglets, peindre_conges) ; sans Spyder dans le
+    venv, la seule feuille de qdarkstyle (ce que faisait le dock jusqu'ici) ; None sans
+    qdarkstyle non plus.
+    """
+    copie = os.path.join(os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache"),
+                         "claude-dock", "spyder-py3")
+    source = os.path.expanduser("~/.config/spyder-py3/config/spyder.ini")
+    try:
+        os.makedirs(os.path.join(copie, "config"), exist_ok=True)
+        if os.path.isfile(source):
+            shutil.copyfile(source, os.path.join(copie, "config", "spyder.ini"))
+        os.environ["SPYDER_CONFDIR"] = copie
+        from spyder.utils import stylesheet
+        from spyder.utils.palette import SpyderPalette
+        from spyder.widgets import tabs
+        application.setStyleSheet(str(stylesheet.APP_STYLESHEET))
+        fond = getattr(stylesheet, "smartos_editor_background",
+                       lambda: SpyderPalette.COLOR_BACKGROUND_1)()
+        return {"palette": SpyderPalette, "fond": fond,
+                "feuille_onglets": str(stylesheet.PANES_TABBAR_STYLESHEET),
+                # Ajout du fork (patch_spyder_arrondi_onglet.py) : absent d'un Spyder nu.
+                "peindre_conges": getattr(tabs, "_smartos_peindre_conges", None)}
+    except Exception:   # Spyder absent, ou casse : le dock doit s'ouvrir quand meme
+        pass
+    finally:
+        os.environ.pop("SPYDER_CONFDIR", None)
     try:
         import qdarkstyle
         from qdarkstyle.dark.palette import DarkPalette
     except ImportError:
         return None
     application.setStyleSheet(qdarkstyle.load_stylesheet(palette=DarkPalette))
-    return DarkPalette
+    return {"palette": DarkPalette, "fond": DarkPalette.COLOR_BACKGROUND_1,
+            "feuille_onglets": "", "peindre_conges": None}
 
 
-class CoinOnglet(QWidget):
-    """[tachymetre][croix], pose a droite de chaque onglet.
+class BarreOnglets(QTabBar):
+    """La barre d'onglets des volets de SmartPythonEditor : le nom « pane-tabbar » que
+    vise sa feuille, et le conge concave au pied de l'onglet actif (`TabBar.paintEvent`
+    du fork). Pas `spyder.widgets.tabs.TabBar` lui-meme : il apporte le glisser-deposer
+    ENTRE volets de Spyder, branche sur son `ancestor` et sur `sig_move_tab`, qui n'ont
+    pas d'equivalent ici."""
+
+    def __init__(self, parent, peindre_conges=None):
+        super().__init__(parent)
+        self.setObjectName("pane-tabbar")
+        self._peindre_conges = peindre_conges
+
+    def paintEvent(self, evenement):  # noqa: N802 - API Qt
+        super().paintEvent(evenement)
+        if self._peindre_conges is not None:
+            peintre = QPainter(self)
+            self._peindre_conges(self, peintre)
+            peintre.end()
+
+
+class CoinOnglet(CoinDOnglet):
+    """[tachymetre][croix], pose a droite de chaque onglet : le coin du panneau de Spyder.
+
+    HERITE de `CoinDOnglet` (spyder_claude/spyder/onglet_compteur.py) pour en partager le
+    CALAGE du cadran sur le texte du titre (`dimensionner_compteur` + `_suivre`), au lieu
+    d'une copie qui avait deja diverge : le dock le centrait sur la croix, 5 px trop haut,
+    le defaut corrige dans le panneau le 04/10/2026. Demande de l'utilisateur, 11/10/2026 :
+    « fais partager le calage entre le dock et le panneau ». Seule la croix est propre au
+    dock (le panneau adopte le `CloseTabButton` de Spyder, que le dock n'a pas).
 
     La croix retrouve SON onglet au clic en parcourant la barre (`tabButton(i) is coin`) :
     l'index d'un onglet change des qu'on en ferme ou deplace un autre.
+
+    Croix aux mesures de `CloseTabButton` de Spyder (icone 16 px dans 18 x 22) : QTabBar
+    tire la hauteur de l'onglet du sizeHint de ce coin, et celui d'un QToolButton nu sous
+    la feuille de Spyder (49 x 56) donnait des onglets de 80 px au lieu de 46 (banc du
+    11/10/2026 ; remarque de l'utilisateur : « les onglets sont beaucoup trop grand
+    verticalement »).
+
+    ⚠ Meme ordre que le panneau : `setTabButton` D'ABORD, `adopter_la_croix` APRES (cf.
+    `FenetreClaude._ajouter_onglet` et le module onglet_compteur).
     """
 
-    def __init__(self, barre, fermer):
-        super().__init__(barre)
-        disposition = QHBoxLayout(self)
-        disposition.setContentsMargins(0, 0, 0, 0)
-        disposition.setSpacing(ESPACE_COMPTEUR_CROIX)
-        self.compteur = Compteur(self)
-        dimensionner_compteur(self.compteur, aligne_sur_onglet=False)
-        disposition.addWidget(self.compteur)
-        croix = QToolButton(self)
-        croix.setIcon(qta.icon("mdi.close"))
+    TAILLE_ICONE = 16  # CloseTabButton.SIZE
+
+    def __init__(self, barre, fermer, icone_croix, survol=None):
+        croix = QToolButton(barre)
+        croix.setIcon(icone_croix)
+        croix.setIconSize(QSize(self.TAILLE_ICONE, self.TAILLE_ICONE))
+        croix.setFixedSize(self.TAILLE_ICONE + 2, self.TAILLE_ICONE + 6)
+        croix.setStyleSheet(
+            "QToolButton { padding: 0px; border: none; border-radius: 3px;"
+            " background: transparent; }"
+            + ("QToolButton:hover { background: %s; }" % survol if survol else ""))
         croix.setAutoRaise(True)
         croix.setFocusPolicy(Qt.NoFocus)
         croix.setToolTip("Fermer cette instance")
+        super().__init__(barre, croix)
         croix.clicked.connect(lambda: fermer(self))
-        disposition.addWidget(croix)
+        self.croix_prevue = croix
+
+    #: Le calage herite (`CoinDOnglet._suivre`) suppose les 12 px de `margin-top` que Spyder
+    #: pose au-dessus des onglets ; le dock les retire (FenetreClaude._feuille_onglets) : le
+    #: texte remonte de 12, ce coin, centre par QTabBar sur l'onglet entier, de 6 seulement.
+    #: Sans cette remontee le cadran tombait 6 px sous le titre (banc du 11/10/2026).
+    REMONTEE_CADRAN = 6
+
+    def _suivre(self):
+        super()._suivre()
+        self._compteur.move(self._compteur.x(), self._compteur.y() - self.REMONTEE_CADRAN)
+
+    @property
+    def compteur(self):
+        return self._compteur
+
+
+class _CoinDesOnglets(QWidget):
+    """Le coin [+][grille]...[fermer] des onglets, aligne en HAUT de la barre.
+
+    Qt pose le coin contre le BAS de la barre, a la hauteur de son sizeHint : avec la feuille de
+    Spyder (barre de 46 px, boutons de 24) la rangee descendait de 20 px (11/10/2026 : « tout
+    descend en vue onglets »). Il prend donc toute la hauteur de la barre, la rangee en haut."""
+
+    def sizeHint(self):
+        taille = super().sizeHint()
+        taille.setHeight(max(taille.height(), self.parent().tabBar().sizeHint().height()))
+        return taille
 
 
 class FenetreClaude(QMainWindow):
@@ -133,12 +283,30 @@ class FenetreClaude(QMainWindow):
         ("Nouveau worker Opus", "--model claude-opus-5-5"),
     )
 
-    def __init__(self, reglages=None, dossier=None, fabrique_vue=None, palette=None):
+    #: Boutons de fenetre : les mesures et le style de spyder_window_controls (plugin.py,
+    #: `_NO_HOVER_BG_MODELE`), sans sa marge basse, qui ne sert que dans sa barre d'outils.
+    BOITE_BOUTON_FENETRE = 21
+    #: Cote de TOUS les boutons de la rangee, onglets comme mosaique : celle des boutons
+    #: de fenetre (24, mesure du 11/10/2026).
+    COTE_BOUTON = 24
+    STYLE_BOUTON_FENETRE = (
+        "QToolButton { border: none; background: transparent; width: 21px; height: 21px;"
+        " margin: 0px; padding: 0px; }"
+        "QToolButton:hover, QToolButton:pressed { background: transparent; border: none; }")
+    CERCLE_FERMER = "#C0392B"
+    ICONES_VOCALES = {"parole": ("mdi.volume-high", "mdi.volume-off", "la synthèse vocale"),
+                      "dictee": ("mdi.microphone", "mdi.microphone-off", "la dictée")}
+
+    def __init__(self, reglages=None, dossier=None, fabrique_vue=None, theme=None,
+                 script_voix=None):
         """`reglages` : un QSettings (un fichier jetable dans les tests).
         `dossier` : ou s'ouvrent les nouvelles sessions (defaut : reglage, puis $HOME).
         `fabrique_vue(parent)` : remplace VueKonsole — le banc y met une vue inerte.
-        `palette` : celle de la feuille de style (`appliquer_style_smartpythoneditor`) ; le
-        terminal en prend fond et texte, comme `_habillage` du panneau dans Spyder.
+        `theme` : celui de SmartPythonEditor (`theme_smartpythoneditor`) ; le terminal en
+        prend fond et texte, comme `_habillage` du panneau dans Spyder, et le cadre de
+        focus ses couleurs. Sans lui, ni cadre ni teinte des poignees.
+        `script_voix` : claude-voix.sh, que les boutons de parole et de dictee appellent
+        (le banc y met un script factice).
         """
         super().__init__()
         self._reglages = reglages if reglages is not None else QSettings(
@@ -151,7 +319,15 @@ class FenetreClaude(QMainWindow):
         self._habillage = {
             "police": self._reglages.value("police", "") or famille,
             "taille_police": int(self._reglages.value("taille_police", 0) or 0) or taille}
-        if palette is not None:
+        self._theme = theme
+        # Les icones a la couleur de celles de Spyder (`ima.MAIN_FG_COLOR`, ICON_1 de sa
+        # palette) : la couleur par defaut de qtawesome est un gris sombre, quasi
+        # invisible sur le fond (remarque de l'utilisateur, 11/10/2026). La palette de
+        # qdarkstyle (repli sans Spyder) n'a pas ICON_1 : son texte en tient lieu.
+        self._couleur_icones = theme and getattr(theme["palette"], "ICON_1",
+                                                 theme["palette"].COLOR_TEXT_1)
+        if theme is not None:
+            palette = theme["palette"]
             self._habillage.update(couleur_fond=palette.COLOR_BACKGROUND_1,
                                    couleur_texte=palette.COLOR_TEXT_1,
                                    couleur_fond_intense=palette.COLOR_BACKGROUND_2)
@@ -177,32 +353,58 @@ class FenetreClaude(QMainWindow):
         self._en_mosaique = False
         self._en_fermeture = False
         self._debut_derniere_session = 0.0
+        self._script_voix = script_voix or os.path.expanduser("~/.scripts/claude-voix.sh")
+        self._boutons_max = []
+        self._boutons_vocaux = {"parole": [], "dictee": []}
+        self._etat_vocal = None
 
         self.setWindowTitle("Claude")
-        self.setWindowIcon(qta.icon("mdi.robot-outline"))
+        self.setWindowIcon(self._icone("mdi.robot-outline"))
+        # Sans barre de titre seulement si on sait la remplacer : sans spyder_window_controls,
+        # la fenetre ne se deplacerait ni ne se redimensionnerait plus.
+        if ResizeGrips is not None:
+            self.setWindowFlag(Qt.FramelessWindowHint, True)
         centre = QWidget(self)
         disposition = QVBoxLayout(centre)
         disposition.setContentsMargins(0, 0, 0, 0)
         disposition.setSpacing(0)
 
         self._onglets = QTabWidget(centre)
+        self._onglets.setTabBar(BarreOnglets(
+            self._onglets, theme and theme["peindre_conges"]))
         self._onglets.setDocumentMode(True)
         self._onglets.setMovable(True)
         self._onglets.tabBar().installEventFilter(self)   # cf. `_teinter_les_onglets`
-        coin = QWidget(self._onglets)
+        # Les titres en entier tant qu'ils tiennent tous ; au-dela, Qt les raccourcit tous
+        # par la gauche plutot que de faire defiler.
+        self._onglets.tabBar().setElideMode(Qt.ElideLeft)
+        self._onglets.setUsesScrollButtons(False)
+        coin = _CoinDesOnglets(self._onglets)
         rangee = QHBoxLayout(coin)
-        rangee.setContentsMargins(0, 0, 0, 0)
-        rangee.setSpacing(0)
+        # Memes ecarts que la rangee de la mosaique (Cellule.MARGE entre boutons), et le pixel
+        # que `right-corner { top: -1px; right: -1px }` de Spyder retire : les boutons ne
+        # bougent pas d'une vue a l'autre (11/10/2026, mesure : x et y identiques).
+        rangee.setContentsMargins(0, 1, 1, 0)
+        rangee.setSpacing(Cellule.MARGE)
+        rangee.setAlignment(Qt.AlignTop)
+        # [+][grille][parole][dictee][reduire][agrandir][fermer] (demandes du 11/10/2026).
+        vocaux, de_fenetre = self._fabriquer_boutons_de_titre(coin)
         for icone, infobulle, rappel in (
-                ("mdi.view-grid-outline", "Afficher les instances en mosaïque",
-                 lambda: self.basculer_mosaique(True)),
-                ("mdi.plus", "Ouvrir une instance Claude", self.ouvrir_session)):
+                ("mdi.plus", "Ouvrir une instance Claude", self.ouvrir_session),
+                ("mdi.view-grid", "Afficher les instances en mosaïque",
+                 lambda: self.basculer_mosaique(True))):
             bouton = QToolButton(coin)
-            bouton.setIcon(qta.icon(icone))
+            bouton.setIcon(self._icone(icone))
             bouton.setAutoRaise(True)
             bouton.setToolTip(infobulle)
             bouton.clicked.connect(lambda checked=False, r=rappel: r())
             rangee.addWidget(bouton)
+        for bouton in vocaux + de_fenetre:
+            rangee.addWidget(bouton)
+        # La feuille de Spyder porte ses QToolButton a 44 x 44 : tous a la taille des
+        # boutons de fenetre (11/10/2026 : « les boutons sont 2x trop grands en vue onglets »).
+        for i in range(rangee.count()):
+            rangee.itemAt(i).widget().setFixedSize(self.COTE_BOUTON, self.COTE_BOUTON)
         self._onglets.setCornerWidget(coin, Qt.TopRightCorner)
         disposition.addWidget(self._onglets)
 
@@ -210,12 +412,24 @@ class FenetreClaude(QMainWindow):
         self._mosaique.hide()
         # Un seul geste de sortie : ici « reduire » et « onglets » reviendraient au meme,
         # il n'y a pas de volet agrandi a rendre. Le bouton de reduction n'est pas pose.
-        self._mosaique._boutons_de_titre = (self._mosaique._bouton_disposition,
-                                            self._mosaique._bouton_nouveau)
+        # Meme rangee que le coin des onglets, dans le meme ordre. Un second jeu : un widget
+        # n'a qu'un parent, et la mosaique deplace les siens de cellule en cellule.
+        vocaux, de_fenetre = self._fabriquer_boutons_de_titre(self._mosaique)
+        for bouton in vocaux + de_fenetre:
+            bouton.hide()
+        self._mosaique._boutons_de_titre = (
+            self._mosaique._bouton_nouveau, self._mosaique._bouton_disposition,
+            *vocaux, *de_fenetre)
         self._mosaique._bouton_reduire.hide()
-        self._mosaique.poser_icone_disposition(qta.icon("mdi.tab"))
-        self._mosaique.poser_icone_nouveau(qta.icon("mdi.plus"))
-        self._mosaique.poser_icone_fermer(qta.icon("mdi.close"))
+        # Tout en haut, a la meme hauteur : « + » et grille perdent leurs 44 x 44 pour la
+        # taille des autres, et l'onglet de cellule monte sans bandeau au-dessus de lui
+        # (11/10/2026 : « tout aligner en haut, et enlever la marge au dessus des titres »).
+        self._mosaique.hauteur_bandeau = 0
+        for bouton in self._mosaique._boutons_de_titre:
+            bouton.setFixedSize(self.COTE_BOUTON, self.COTE_BOUTON)
+        self._mosaique.poser_icone_disposition(self._icone("mdi.tab", hflip=True))
+        self._mosaique.poser_icone_nouveau(self._icone("mdi.plus"))
+        self._mosaique.poser_icone_fermer(self._icone("mdi.close"))
         self._mosaique.sig_disposition_demandee.connect(
             lambda: self.basculer_mosaique(False))
         self._mosaique.sig_nouvelle_demande.connect(lambda: self.ouvrir_session())
@@ -226,6 +440,22 @@ class FenetreClaude(QMainWindow):
         self._bandeau = BandeauUsage(centre)
         disposition.addWidget(self._bandeau)
         self.setCentralWidget(centre)
+
+        # Fond des onglets inactifs : alpha 2, pas transparent (cf. main_widget, meme
+        # attribut) — `_teinter_les_onglets` reconnait l'onglet a la couleur de son centre.
+        self._feuille_onglets = (
+            (theme["feuille_onglets"] if theme else "")
+            + "QTabBar#pane-tabbar::tab:!selected { background: rgba(0, 0, 0, 2); }"
+            # Les 12 px que PanesTabBarStyleSheet pose au-dessus des onglets (place des boutons
+            # de coin de Spyder) : retires, onglets en haut comme ceux de la mosaique
+            # (11/10/2026 : « les onglets doivent remonter dans la vue onglets »).
+            + "QTabBar#pane-tabbar::tab { margin-top: 0px; }"
+            # ... et la meme marge, posee par la meme feuille sur les QToolButton de la barre,
+            # donc sur la croix : sans ce retrait elle tombait 6 px sous le titre (banc du
+            # 11/10/2026, croix y 20-25 pour un texte y 7-24).
+            + "QTabBar#pane-tabbar QToolButton { margin-top: 0px; }")
+        self._appliquer_cadre(focus=False)
+        QApplication.instance().focusChanged.connect(self._suivre_le_focus)
 
         # Les jeux de couleurs des etats AVANT toute session : qtermwidget met la liste
         # en cache a la premiere lecture (cf. main_widget._preparer_schemas_detat). Pas
@@ -243,6 +473,10 @@ class FenetreClaude(QMainWindow):
             self.restoreGeometry(geometrie)
         else:
             self.resize(900, 700)
+
+        if ResizeGrips is not None:
+            self._poignees = ResizeGrips(self)
+        self._rafraichir_vocal()
 
         self._minuteur = QTimer(self)
         self._minuteur.setInterval(self.PERIODE_SONDAGE)
@@ -275,8 +509,9 @@ class FenetreClaude(QMainWindow):
 
     # ------------------------------------------------------------------ sessions
 
-    def ouvrir_session(self, dossier=None, conversation=None):
-        """main_widget.ouvrir_terminal. `conversation` reprend ce session_id par `-r`."""
+    def ouvrir_session(self, dossier=None, conversation=None, nouvelle=False):
+        """main_widget.ouvrir_terminal. `conversation` reprend ce session_id par `-r` ;
+        `nouvelle` lance `claude` sans selecteur (« Nouveau Claude » de Dolphin)."""
         if not self._moteur:
             self._etat_vide("Le moteur de Konsole n'est pas construit sur cette machine.\n\n"
                             "Lancer le script qtermwidget_binding/build.sh du dépôt "
@@ -307,11 +542,184 @@ class FenetreClaude(QMainWindow):
         if conversation:
             self._conversations[vue] = (conversation, dossier)
             self._lancer(vue, self._commande_nouvelle_session("-r " + conversation))
+        elif nouvelle:
+            self._lancer(vue, self._commande_nouvelle_session(""))
         else:
             self._lancer(vue, self.commande_claude())
             self._poser_bandeau(vue)
         vue.setFocus()
         return vue
+
+    # ------------------------------------------------------------------ menu de Dolphin
+
+    def ecouter(self):
+        """Recoit « Nouveau Claude » / « Reprendre Claude » du menu de Dolphin.
+
+        DEMANDE (11/10/2026) : « les entrée du menu contextuel d'un dossier "Nouveau Claude"
+        et "Reprendre Claude" peuvent ouvrir un nouvel onglet dans Claude Dock ? », puis
+        « fait le maintenant ». Une ligne par demande, `lancer|reprendre<TAB>dossier`,
+        reponse `ok` ; `claude_dolphin.sh` l'envoie par socat et retombe sur sa Konsole
+        quand personne ne repond. Faux si un autre dock ecoute deja : c'est lui qui sert.
+        """
+        chemin = chemin_du_canal()
+        sonde = QLocalSocket(self)
+        sonde.connectToServer(chemin)
+        if sonde.waitForConnected(200):
+            sonde.abort()
+            return False
+        QLocalServer.removeServer(chemin)   # socket orphelin d'un dock mort
+        self._serveur = QLocalServer(self)
+        self._serveur.newConnection.connect(self._accepter)
+        return self._serveur.listen(chemin)
+
+    def _accepter(self):
+        while self._serveur.hasPendingConnections():
+            client = self._serveur.nextPendingConnection()
+            client.readyRead.connect(lambda c=client: self._lire_demande(c))
+            client.disconnected.connect(client.deleteLater)
+
+    def _lire_demande(self, client):
+        if not client.canReadLine():
+            return
+        ligne = bytes(client.readLine()).decode("utf-8", "replace")
+        client.write(b"ok\n" if self.demande_du_menu(ligne) else b"refus\n")
+        client.flush()
+        client.disconnectFromServer()
+
+    def demande_du_menu(self, ligne):
+        """`lancer<TAB>dossier` : session neuve ; `reprendre<TAB>dossier` : le selecteur."""
+        mode, _, dossier = ligne.rstrip("\n").partition("\t")
+        if mode not in ("lancer", "reprendre") or not os.path.isdir(dossier):
+            return False
+        if self.ouvrir_session(dossier, nouvelle=(mode == "lancer")) is None:
+            return False
+        self._se_montrer()
+        return True
+
+    def _se_montrer(self):
+        if self.isMinimized():
+            self.showNormal()
+        # Sous Wayland, raise_/activateWindow de Qt sont sans effet : seul kdotool (KWin)
+        # passe au premier plan une fenetre que l'utilisateur n'a pas cliquee.
+        QProcess.startDetached("kdotool", ["search", "--class", "claude-dock",
+                                           "windowactivate"])
+
+    # ------------------------------------------------------------------ titre de fenetre
+
+    def _fabriquer_boutons_de_titre(self, parent):
+        """([parole][dictee], [reduire][agrandir][fermer]) pour `parent` (le coin des onglets
+        ou la mosaique) : [+][grille] a gauche, puis les interrupteurs vocaux, les boutons
+        de fenetre a droite de tout (demandes du 11/10/2026). Sans spyder_window_controls, la barre de
+        titre du systeme est gardee, et la seconde liste est vide."""
+        vocaux, de_fenetre = [], []
+        if ResizeGrips is not None:
+            de_fenetre = [
+                self._bouton_de_fenetre(parent, "min", self.showMinimized, "Réduire"),
+                self._bouton_de_fenetre(parent, "max", self._basculer_agrandi,
+                                        "Agrandir / restaurer"),
+                self._bouton_de_fenetre(parent, "close", self.close, "Fermer",
+                                        cercle=self.CERCLE_FERMER, glyphe_survol="white")]
+            self._boutons_max.append(de_fenetre[1])
+        for moitie in ("parole", "dictee"):
+            bouton = QToolButton(parent)
+            bouton.setAutoRaise(True)
+            bouton.clicked.connect(lambda *_ignore, m=moitie: self.basculer_vocal(m))
+            self._boutons_vocaux[moitie].append(bouton)
+            vocaux.append(bouton)
+        return vocaux, de_fenetre
+
+    def _couleurs_de_fenetre(self):
+        """(glyphe, rond de survol) : ICON_1 et COLOR_BACKGROUND_5, ceux que
+        spyder_window_controls prend dans SmartPythonEditor."""
+        palette = self._theme and self._theme["palette"]
+        return (self._couleur_icones or self.palette().windowText().color().name(),
+                getattr(palette, "COLOR_BACKGROUND_5", "#54687A"))
+
+    def _bouton_de_fenetre(self, parent, genre, rappel, infobulle, cercle=None,
+                           glyphe_survol=None):
+        glyphe, gris = self._couleurs_de_fenetre()
+        bouton = HoverButton(glyph_icon(genre, glyphe),
+                             hover_icon(genre, glyphe_survol or glyphe, cercle or gris), parent)
+        bouton.setIconSize(QSize(self.BOITE_BOUTON_FENETRE, self.BOITE_BOUTON_FENETRE))
+        bouton.setAutoRaise(True)
+        bouton.setStyleSheet(self.STYLE_BOUTON_FENETRE)
+        bouton.setFocusPolicy(Qt.NoFocus)
+        bouton.setToolTip(infobulle)
+        # `clicked` passe un booleen : il ne doit atteindre aucun parametre du rappel.
+        bouton.clicked.connect(lambda *_ignore: rappel())
+        return bouton
+
+    def _basculer_agrandi(self):
+        if self.isMaximized():
+            self.showNormal()
+        else:
+            self.showMaximized()
+
+    def changeEvent(self, evenement):  # noqa: N802 - API Qt
+        """L'icone agrandir / restaurer suit l'etat reel : il change aussi par le
+        double-clic, par KWin (raccourci, bord d'ecran) et par `restoreGeometry`."""
+        super().changeEvent(evenement)
+        if evenement.type() == QEvent.WindowStateChange and self._boutons_max:
+            genre = "restore" if self.isMaximized() else "max"
+            glyphe, gris = self._couleurs_de_fenetre()
+            for bouton in self._boutons_max:
+                bouton.set_icons(glyph_icon(genre, glyphe), hover_icon(genre, glyphe, gris))
+
+    def mousePressEvent(self, evenement):  # noqa: N802 - API Qt
+        """Sans barre de titre, on deplace la fenetre par les vides de la barre d'onglets,
+        du coin et du bandeau : les clics que leurs widgets ignorent remontent jusqu'ici."""
+        if (ResizeGrips is not None and evenement.button() == Qt.LeftButton
+                and self.windowHandle() is not None
+                and self.windowHandle().startSystemMove()):
+            evenement.accept()
+            return
+        super().mousePressEvent(evenement)
+
+    def mouseDoubleClickEvent(self, evenement):  # noqa: N802 - API Qt
+        if ResizeGrips is not None and evenement.button() == Qt.LeftButton:
+            self._basculer_agrandi()
+            evenement.accept()
+            return
+        super().mouseDoubleClickEvent(evenement)
+
+    # ------------------------------------------------------------------ parole et dictee
+
+    @staticmethod
+    def etat_vocal():
+        """{"parole": bool, "dictee": bool}, lu dans le registre partage. voix-active est
+        l'interrupteur maitre de claude-voix.sh ; chaque moitie s'y coupe par un temoin a
+        part (`--parole off` -> parole-coupee), cf. son mode --parole|--dictee."""
+        dossier = etat_instances.dossier_etat()
+        actif = os.path.exists(os.path.join(dossier, "voix-active"))
+        return {moitie: actif and not os.path.exists(
+            os.path.join(dossier, moitie + "-coupee")) for moitie in ("parole", "dictee")}
+
+    def basculer_vocal(self, moitie):
+        """Allume ou coupe la seule parole, ou la seule dictee. Par claude-voix.sh, jamais en
+        ecrivant le registre ici : couper doit aussi faire taire la voix en cours ou fermer
+        le micro, et tous les autres lecteurs du registre passent deja par lui."""
+        allume = self.etat_vocal()[moitie]
+        QProcess.startDetached(self._script_voix,
+                               ["--" + moitie, "off" if allume else "on"])
+
+    def _rafraichir_vocal(self):
+        etat = self.etat_vocal()
+        if etat == self._etat_vocal:
+            return
+        self._etat_vocal = etat
+        for moitie, (allumee, coupee, nom) in self.ICONES_VOCALES.items():
+            icone = self._icone(allumee if etat[moitie] else coupee)
+            infobulle = ("Couper " if etat[moitie] else "Rallumer ") + nom
+            for bouton in self._boutons_vocaux[moitie]:
+                bouton.setIcon(icone)
+                bouton.setToolTip(infobulle)
+
+    def _icone(self, nom, **options):
+        """Les MEMES icones que le panneau dans Spyder (main_widget : `mdi.view-grid`
+        plein, `mdi.tab` retournee), a sa couleur."""
+        if self._couleur_icones is not None:
+            options["color"] = self._couleur_icones
+        return qta.icon(nom, **options)
 
     def _ajouter_onglet(self, vue):
         """Un onglet pour `vue`, avec son coin [tachymetre][croix]. Rend son index.
@@ -320,12 +728,15 @@ class FenetreClaude(QMainWindow):
         boutons de l'onglet retire.
         """
         titre = self._titres.get(vue, "")
-        index = self._onglets.addTab(vue, self._titre_court(titre) or "Claude")
+        index = self._onglets.addTab(vue, titre or "Claude")
         self._onglets.setTabToolTip(index, titre)
-        coin = CoinOnglet(self._onglets.tabBar(), self._fermer_par_coin)
+        coin = CoinOnglet(self._onglets.tabBar(), self._fermer_par_coin,
+                          self._icone("mdi.close"),
+                          self._theme and self._theme["palette"].COLOR_BACKGROUND_6)
         coin.compteur.poser_pleine_echelle(self.vitesse_maximale())
         coin.compteur.poser_valeur(self._dernieres_vitesses.get(vue))
         self._onglets.tabBar().setTabButton(index, QTabBar.RightSide, coin)
+        coin.adopter_la_croix(coin.croix_prevue)
         self._coins[vue] = coin
         return index
 
@@ -460,12 +871,6 @@ class FenetreClaude(QMainWindow):
     # ------------------------------------------------------------------ titres
 
     @staticmethod
-    def _titre_court(texte):
-        if not texte:
-            return ""
-        return texte if len(texte) <= 24 else "…" + texte[-23:]
-
-    @staticmethod
     def _sans_temoin(texte):
         if texte and (texte[0] == "✳" or "⠀" <= texte[0] <= "⣿"
                       or "◐" <= texte[0] <= "◓"):
@@ -480,7 +885,7 @@ class FenetreClaude(QMainWindow):
         self._titres[vue] = texte
         index = self._onglets.indexOf(vue)
         if index >= 0:
-            self._onglets.setTabText(index, self._titre_court(texte))
+            self._onglets.setTabText(index, texte)
             self._onglets.setTabToolTip(index, texte)
         if self._en_mosaique:
             self._mosaique.poser_titre(vue, texte)
@@ -604,14 +1009,94 @@ class FenetreClaude(QMainWindow):
             if actif is not None and (vue is actif or vue.isAncestorOf(actif)):
                 courant = index
         self._en_mosaique = False
+        # APRES la bascule, pas avant comme dans main_widget : le focus bouge pendant le
+        # retour, et tant que `_en_mosaique` est vrai `_appliquer_cadre` reposerait les
+        # feuilles par vue (mesure par TestRendu, 11/10/2026).
+        self._rendre_les_cadres_au_panneau()
         if self._onglets.count():
             self._onglets.setCurrentIndex(courant)
         self._rafraichir_letat_affiche()
 
     def _rafraichir_letat_affiche(self):
+        self._mosaique.poser_couleur_poignees(self._habillage.get("couleur_fond"))
         for vue in self._vues:
             self._appliquer_etat(vue, self._etats.get(vue))
             self._appliquer_vitesse(vue, self._dernieres_vitesses.get(vue))
+        # Les cellules renaissent a chaque `disposer` : leurs onglets de titre n'ont pas
+        # encore la couleur du cadre de leur vue.
+        if self._en_mosaique:
+            self._repartir_les_cadres()
+
+    # ------------------------------------------------------------------ cadre de focus
+
+    def _appliquer_cadre(self, focus):
+        """main_widget._appliquer_cadre : gris au repos, BLEU quand le dock a le clavier.
+
+        Les feuilles sont posees seulement si elles CHANGENT : cette methode suit
+        QApplication.focusChanged, et reposer une feuille identique repolit quand meme
+        (5 ms, mesure du 05/10/2026 dans Spyder)."""
+        if self._theme is None:
+            return
+        palette = self._theme["palette"]
+        couleur = palette.COLOR_ACCENT_3 if focus else palette.COLOR_BACKGROUND_4
+        # Sur le widget central : elle descend aux vues, en onglets comme en mosaique.
+        feuille = self._feuille_cadre(couleur)
+        epais = (f"background-color: {konsole_view.eclaircir(self._theme['fond'])};"
+                 if focus else "")
+        onglets = (self._feuille_onglets
+                   + "QTabBar#pane-tabbar::tab:selected,"
+                   f" QTabBar#pane-tabbar::tab:selected:hover {{ border-color: {couleur}; {epais} }}")
+        centre = self.centralWidget()
+        if feuille != centre.styleSheet():
+            centre.setStyleSheet(feuille)
+        if onglets != self._onglets.styleSheet():
+            self._onglets.setStyleSheet(onglets)
+        # Ce que `_smartos_suivre_focus` du fork pose sur la barre du volet actif : lu par
+        # PanesTabBarStyleSheet et par le conge. Il n'est branche que par les onglets de
+        # Spyder (BaseTabs), jamais construits ici.
+        barre = self._onglets.tabBar()
+        if bool(barre.property("smartos_focus")) != focus:
+            barre.setProperty("smartos_focus", focus)
+            barre.style().unpolish(barre)
+            barre.style().polish(barre)
+            barre.update()
+        for vue in self._vues:
+            vue.poser_liseret(palette.COLOR_ACCENT_3 if focus else None, double=False)
+        if self._en_mosaique:
+            self._repartir_les_cadres()
+
+    def _feuille_cadre(self, couleur):
+        """Coin haut gauche carre : l'onglet actif s'y raccorde (cf. main_widget)."""
+        return ("QFrame#terminal_smartos {"
+                f" border: 1px solid {couleur};"
+                f" border-radius: {self._theme['palette'].SIZE_BORDER_RADIUS};"
+                " border-top-left-radius: 0px; }")
+
+    def _suivre_le_focus(self, _ancien, nouveau):
+        self._appliquer_cadre(bool(nouveau is not None and self.isAncestorOf(nouveau)))
+
+    def _repartir_les_cadres(self):
+        """main_widget._repartir_les_cadres : en mosaique, bleu sur la SEULE vue qui a le
+        clavier. `self.focusWidget()`, pas celui de l'application : il survit a la
+        desactivation de la fenetre."""
+        if self._theme is None:
+            return
+        palette = self._theme["palette"]
+        actif = self.focusWidget()
+        for vue in self._vues:
+            a_le_clavier = bool(actif is not None
+                                and (vue is actif or vue.isAncestorOf(actif)))
+            couleur = palette.COLOR_ACCENT_3 if a_le_clavier else palette.COLOR_BACKGROUND_4
+            vue.setStyleSheet(self._feuille_cadre(couleur))
+            liseret = palette.COLOR_ACCENT_3 if a_le_clavier else None
+            vue.poser_liseret(liseret)
+            self._mosaique.poser_cadre(vue, couleur, self._theme["fond"], liseret)
+
+    def _rendre_les_cadres_au_panneau(self):
+        """Une feuille posee sur la vue l'emporte sur celle du widget central : sans ce
+        menage, les vues garderaient au retour aux onglets le gris de la mosaique."""
+        for vue in self._vues:
+            vue.setStyleSheet("")
 
     # ------------------------------------------------------------------ registre
 
@@ -624,6 +1109,7 @@ class FenetreClaude(QMainWindow):
                 self._etats[vue] = etat
                 self._appliquer_etat(vue, etat)
 
+        self._rafraichir_vocal()
         cible = etat_instances.demande_de_focus()
         if cible:
             self.activer_session(cible)
@@ -676,18 +1162,27 @@ class FenetreClaude(QMainWindow):
         conversation ecriraient le meme transcript a deux mains. Elle reste dans la liste
         memorisee (l'autre dock peut la fermer d'ici le prochain lancement) et l'omission
         est dite dans la barre d'etat.
+
+        Les sessions memorisees par SmartPythonEditor s'y AJOUTENT, apres les siennes et
+        sans doublon (remarque de l'utilisateur, 11/10/2026 : « les sessions de
+        SmartPythonEditor ne sont pas réouvertes ») ; meme regle pour celles qu'un Spyder
+        ouvert porte deja. ⚠ L'inverse n'est pas garde : `main_widget.rouvrir_les_sessions`
+        ne saute pas les conversations vivantes, donc un SmartPythonEditor lance APRES le
+        dock reprendrait aussi celles que le dock lui a reprises.
         """
         try:
             entrees = json.loads(self._reglages.value(self.CLE_SESSIONS, "") or "[]")
         except (TypeError, ValueError):
             entrees = []
+        if not isinstance(entrees, list):
+            entrees = []
         a_rouvrir = []
-        for entree in entrees if isinstance(entrees, list) else []:
+        for entree in entrees + sessions_de_smartpythoneditor():
             try:
                 session, dossier = entree
             except (TypeError, ValueError):
                 continue
-            if session:
+            if session and session not in (s for s, _ in a_rouvrir):
                 a_rouvrir.append([session, dossier])
         self._sessions_memorisees = a_rouvrir
         vivantes = usage.sessions_vivantes()
@@ -738,6 +1233,8 @@ class FenetreClaude(QMainWindow):
                 if index >= 0:
                     self._onglets.setCurrentIndex(index)
             vue.setFocus()
+            # focusChanged se tait quand la fenetre n'est pas active (cf. main_widget).
+            self._appliquer_cadre(True)
             return True
         return False
 
@@ -793,8 +1290,9 @@ def main(argv=None):
     application.setApplicationName("claude-dock")
     application.setDesktopFileName("claude-dock")
     dossier = os.path.abspath(argv[1]) if len(argv) > 1 else None
-    palette = appliquer_style_smartpythoneditor(application)
-    fenetre = FenetreClaude(dossier=dossier, palette=palette)
+    theme = theme_smartpythoneditor(application)
+    fenetre = FenetreClaude(dossier=dossier, theme=theme)
     fenetre.show()
     fenetre.demarrer()
+    fenetre.ecouter()
     return application.exec_()
