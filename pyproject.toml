@@ -24,5 +24,9 @@ dependencies = ["qtpy", "qtawesome", "spyder-konsole"]
 [project.entry-points."spyder.plugins"]
 claude_pane = "spyder_claude.spyder.plugin:GreffonClaude"
 
+# Le dock seul, hors de Spyder (cf. spyder_claude/autonome/fenetre.py).
+[project.scripts]
+claude-dock = "spyder_claude.autonome.fenetre:main"
+
 [tool.setuptools.packages.find]
 include = ["spyder_claude*"]

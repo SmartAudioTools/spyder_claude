@@ -217,6 +217,18 @@ def sessions_par_onglet(dossier=None):
     return resultat
 
 
+def sessions_vivantes(dossier=None):
+    """Les session_id portes par une instance Claude VIVANTE, d'ou qu'elle soit lancee.
+
+    Sert a ne pas reprendre deux fois la meme conversation : le dock autonome et le dock
+    de Spyder memorisent chacun leurs sessions et les rouvrent au demarrage (remarque du
+    Superviseur, 11/10/2026). Toutes les instances comptent, onglet ou fenetre : une
+    conversation reprise ailleurs est deja prise.
+    """
+    return {valeurs.get("CU_SESSION") for valeurs in _lire_usages(dossier).values()
+            if valeurs.get("CU_SESSION")}
+
+
 def deposer_usage(pid, valeurs, dossier=None):
     """Ecrit un fichier usage-<pid>. N'existe que pour les tests et le diagnostic.
 
