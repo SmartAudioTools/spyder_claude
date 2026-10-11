@@ -21,7 +21,9 @@ Ce qui DIFFERE du panneau, et pourquoi :
     son onglet par l'EMETTEUR du clic — reparentee, son clic serait perdu ;
   - la reprise ne relance pas une conversation deja ouverte ailleurs (le dock de Spyder
     rouvre aussi les siennes) : cf. `rouvrir_les_sessions` ;
-  - pas de cadre de focus ni de couleurs de l'IDE : le terminal garde son profil Konsole ;
+  - pas de cadre de focus ; la feuille de style, les couleurs du terminal et sa police sont
+    celles de SmartPythonEditor, retrouvees SANS importer Spyder (cf.
+    `appliquer_style_smartpythoneditor`, `police_de_l_editeur`) ;
   - la liste des sessions s'ecrit en JSON dans le QSettings : une liste de listes ne
     survit pas telle quelle a un fichier INI.
 """
@@ -44,6 +46,47 @@ from spyder_claude import etat_instances, usage
 from spyder_claude.compteurs import BandeauUsage, Compteur
 from spyder_claude.mosaique import ESPACE_COMPTEUR_CROIX, Mosaique, dimensionner_compteur
 from spyder_konsole import konsole_view
+
+
+def police_de_l_editeur():
+    """(famille, taille) de l'editeur de SmartPythonEditor, ou (None, None).
+
+    Lue dans son spyder.ini avec configparser, EN LECTURE SEULE : importer `spyder.config`
+    instancierait CONF, qui peut reecrire ~/.config/spyder-py3 pendant que Spyder tourne.
+    `font/family` y est une liste de repli (comme `get_family` de Spyder : la premiere
+    installee gagne)."""
+    import ast
+    import configparser
+    from qtpy.QtGui import QFontDatabase
+    dossier = os.environ.get("SPYDER_CONFDIR") or os.path.expanduser("~/.config/spyder-py3")
+    ini = configparser.RawConfigParser()
+    try:
+        ini.read(os.path.join(dossier, "config", "spyder.ini"), encoding="utf-8")
+        familles = ini.get("appearance", "font/family")
+        taille = ini.getint("appearance", "font/size")
+    except (configparser.Error, ValueError, OSError):
+        return None, None
+    try:
+        familles = ast.literal_eval(familles)
+    except (ValueError, SyntaxError):
+        pass
+    familles = [familles] if isinstance(familles, str) else list(familles)
+    installees = set(QFontDatabase.families())
+    famille = next((f for f in familles if f in installees), None)
+    return famille, (taille if famille else None)
+
+
+def appliquer_style_smartpythoneditor(application):
+    """La feuille de style de SmartPythonEditor : celle de qdarkstyle sur la palette sombre,
+    que `AppStylesheet` de Spyder reprend telle quelle avant ses retouches de police. Rend
+    la palette (couleurs du terminal), ou None sans qdarkstyle."""
+    try:
+        import qdarkstyle
+        from qdarkstyle.dark.palette import DarkPalette
+    except ImportError:
+        return None
+    application.setStyleSheet(qdarkstyle.load_stylesheet(palette=DarkPalette))
+    return DarkPalette
 
 
 class CoinOnglet(QWidget):
@@ -90,20 +133,28 @@ class FenetreClaude(QMainWindow):
         ("Nouveau worker Opus", "--model claude-opus-5-5"),
     )
 
-    def __init__(self, reglages=None, dossier=None, fabrique_vue=None):
+    def __init__(self, reglages=None, dossier=None, fabrique_vue=None, palette=None):
         """`reglages` : un QSettings (un fichier jetable dans les tests).
         `dossier` : ou s'ouvrent les nouvelles sessions (defaut : reglage, puis $HOME).
         `fabrique_vue(parent)` : remplace VueKonsole — le banc y met une vue inerte.
+        `palette` : celle de la feuille de style (`appliquer_style_smartpythoneditor`) ; le
+        terminal en prend fond et texte, comme `_habillage` du panneau dans Spyder.
         """
         super().__init__()
         self._reglages = reglages if reglages is not None else QSettings(
             "SmartOS", "claude-dock")
         self._dossier = (dossier or self._reglages.value("dossier", "")
                          or os.path.expanduser("~"))
+        # Reglage d'abord, puis la police de l'editeur de SmartPythonEditor (celle que le
+        # panneau passe au terminal dans Spyder), puis None : VueKonsole prend le profil.
+        famille, taille = police_de_l_editeur()
         self._habillage = {
-            "police": self._reglages.value("police", "") or None,
-            # None, pas 10 : VueKonsole prend alors la taille du profil Konsole.
-            "taille_police": int(self._reglages.value("taille_police", 0) or 0) or None}
+            "police": self._reglages.value("police", "") or famille,
+            "taille_police": int(self._reglages.value("taille_police", 0) or 0) or taille}
+        if palette is not None:
+            self._habillage.update(couleur_fond=palette.COLOR_BACKGROUND_1,
+                                   couleur_texte=palette.COLOR_TEXT_1,
+                                   couleur_fond_intense=palette.COLOR_BACKGROUND_2)
         self._fabrique_vue = fabrique_vue or (
             lambda parent: konsole_view.VueKonsole(parent, **self._habillage))
         self._moteur = fabrique_vue is not None or konsole_view.DISPONIBLE
@@ -742,7 +793,8 @@ def main(argv=None):
     application.setApplicationName("claude-dock")
     application.setDesktopFileName("claude-dock")
     dossier = os.path.abspath(argv[1]) if len(argv) > 1 else None
-    fenetre = FenetreClaude(dossier=dossier)
+    palette = appliquer_style_smartpythoneditor(application)
+    fenetre = FenetreClaude(dossier=dossier, palette=palette)
     fenetre.show()
     fenetre.demarrer()
     return application.exec_()
