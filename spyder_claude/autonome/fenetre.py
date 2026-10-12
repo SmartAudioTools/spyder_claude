@@ -198,6 +198,18 @@ class BarreOnglets(QTabBar):
             zone.setRight(zone.right() - MARGE_CONGE)
         return zone
 
+    def tabLayoutChange(self):  # noqa: N802 - API Qt
+        """La croix du dernier onglet, ramenee dans son cadre : Qt la cale sur le rectangle
+        de l'onglet MARGE COMPRISE, elle collait au flanc droit (« la croix touche le
+        contour », utilisateur, 12/10/2026 ; ecart croix/flanc -1 px au lieu de 5, banc).
+        Idempotent : ne recule que la croix posee sur ou apres le flanc."""
+        super().tabLayoutChange()
+        dernier = self.count() - 1
+        coin = self.tabButton(dernier, QTabBar.RightSide) if dernier >= 0 else None
+        if (self._peindre_conges is not None and coin is not None
+                and coin.geometry().right() >= self.tabRect(dernier).right()):
+            coin.move(coin.x() - MARGE_CONGE, coin.y())
+
     def paintEvent(self, evenement):  # noqa: N802 - API Qt
         super().paintEvent(evenement)
         if self._peindre_conges is not None:

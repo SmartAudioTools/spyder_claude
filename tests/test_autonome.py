@@ -400,6 +400,29 @@ class TestRendu(Banc):
             self.assertEqual(image.pixelColor(zone.right() + MARGE_CONGE - 1, 1).name(),
                              "#ff0000", f"largeur {largeur}")
 
+    def test_croix_du_dernier_onglet_hors_de_la_marge_du_conge(self):
+        """« la croix touche le contour » (utilisateur, 12/10/2026) : Qt calait la croix du
+        dernier onglet sur son rectangle marge du conge comprise - ecart au flanc -1 px au lieu
+        des 5 des autres onglets. Meme ecart partout, large, etroit, et onglet seul."""
+        f = self.fenetre(theme=dict(self.theme(), peindre_conges=lambda barre, peintre: None))
+        f.show()
+        for _ in range(3):
+            f.ouvrir_session()
+        barre = f._onglets.tabBar()
+
+        def ecarts():
+            APP.processEvents()
+            return [barre.tabRect(i).right()
+                    - barre.tabButton(i, QTabBar.RightSide).geometry().right()
+                    for i in range(barre.count())]
+        attendu = ecarts()[0]
+        for largeur in (1200, 500):
+            f.resize(largeur, 300)
+            self.assertEqual(set(ecarts()), {attendu}, f"largeur {largeur}")
+        f._onglets.removeTab(2)
+        f._onglets.removeTab(1)
+        self.assertEqual(ecarts(), [attendu], "onglet seul")
+
     def test_sans_theme_ni_cadre_ni_teinte(self):
         f = self.fenetre()
         f.ouvrir_session()
