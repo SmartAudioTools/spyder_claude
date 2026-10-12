@@ -57,7 +57,7 @@ from qtpy.QtWidgets import (QApplication, QGraphicsOpacityEffect, QHBoxLayout, Q
 
 from spyder_claude import etat_instances, usage
 from spyder_claude.compteurs import BandeauUsage
-from spyder_claude.mosaique import Cellule, Mosaique
+from spyder_claude.mosaique import MARGE_CONGE, Cellule, Mosaique
 from spyder_claude.spyder.onglet_compteur import CoinDOnglet
 from spyder_konsole import konsole_view
 
@@ -179,12 +179,24 @@ class BarreOnglets(QTabBar):
     vise sa feuille, et le conge concave au pied de l'onglet actif (`TabBar.paintEvent`
     du fork). Pas `spyder.widgets.tabs.TabBar` lui-meme : il apporte le glisser-deposer
     ENTRE volets de Spyder, branche sur son `ancestor` et sur `sig_move_tab`, qui n'ont
-    pas d'equivalent ici."""
+    pas d'equivalent ici.
+
+    Le dernier onglet garde a sa droite une marge de la largeur du conge (`MARGE_CONGE`,
+    posee par la feuille de la fenetre) : la barre bute sur les boutons de coin, et un
+    conge peint hors de la barre est coupe - le flanc droit du dernier onglet actif
+    s'arretait au-dessus du cadre (banc du 12/10/2026). `tabRect` rend le rectangle SANS
+    cette marge : c'est lui que lit le conge du fork pour placer le flanc."""
 
     def __init__(self, parent, peindre_conges=None):
         super().__init__(parent)
         self.setObjectName("pane-tabbar")
         self._peindre_conges = peindre_conges
+
+    def tabRect(self, index):  # noqa: N802 - API Qt
+        zone = super().tabRect(index)
+        if self._peindre_conges is not None and index == self.count() - 1:
+            zone.setRight(zone.right() - MARGE_CONGE)
+        return zone
 
     def paintEvent(self, evenement):  # noqa: N802 - API Qt
         super().paintEvent(evenement)
@@ -453,7 +465,12 @@ class FenetreClaude(QMainWindow):
             # ... et la meme marge, posee par la meme feuille sur les QToolButton de la barre,
             # donc sur la croix : sans ce retrait elle tombait 6 px sous le titre (banc du
             # 11/10/2026, croix y 20-25 pour un texte y 7-24).
-            + "QTabBar#pane-tabbar QToolButton { margin-top: 0px; }")
+            + "QTabBar#pane-tabbar QToolButton { margin-top: 0px; }"
+            # La place du conge droit du dernier onglet (cf. BarreOnglets) ; un onglet seul
+            # n'est pas :last pour Qt, mais :only-one.
+            + ("QTabBar#pane-tabbar::tab:last, QTabBar#pane-tabbar::tab:only-one"
+               f" {{ margin-right: {MARGE_CONGE}px; }}"
+               if theme and theme["peindre_conges"] else ""))
         self._appliquer_cadre(focus=False)
         QApplication.instance().focusChanged.connect(self._suivre_le_focus)
 

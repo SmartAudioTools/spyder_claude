@@ -785,5 +785,35 @@ class TestBandeauColoreDeLaPremiereRangee(unittest.TestCase):
         self.assertAlmostEqual(haute[1], 26.5, delta=0.5)  # texte cale sur les onglets (27.5 avant le 11/10 : l'onglet reserve DEBORD_ONGLET px en bas, le texte monte de 1)
         self.assertEqual(haute[2], TAILLE_BOUTON - Cellule.DEBORD_ONGLET)  # terminal sous ses 44 px, moins le debord de l'onglet
 
+
+class TestCongeDeLOnglet(unittest.TestCase):
+
+    def test_conge_concave_au_pied_du_flanc_droit(self):
+        """Demande du 12/10/2026 (« traite Claude Dock et la mosaique ») : l'onglet de titre
+        se raccorde au cadre de la vue par un conge concave, comme les onglets du fork, au
+        focus (contour de 2 px : bordure et liseret) comme au repos. Sans lui, le flanc droit
+        descend tout droit jusqu'au pied de l'onglet : l'angle reste rouge ci-dessous."""
+        from spyder_claude.mosaique import RAYON_CONGE
+        for liseret in ("#00ff00", None):
+            vue = QWidget()
+            cellule = Cellule(vue, "Essai", compacte=False)
+            cellule.poser_cadre("#ff0000", "#000000", liseret)
+            cellule.resize(400, 200)
+            cellule.show()
+            QApplication.processEvents()
+            image = cellule._onglet.grab().toImage()
+            rouge = lambda x, y: image.pixelColor(x, y).red() > 128 \
+                and image.pixelColor(x, y).green() < 100
+            h = image.height()
+            flanc = max(x for x in range(image.width()) if rouge(x, h // 2))
+            cadre = h - 2   # trait haut du cadre de la vue : avant-derniere ligne de l'onglet
+            etat = "focus" if liseret else "repos"
+            self.assertFalse(rouge(flanc, cadre), "%s : angle du flanc et du cadre non recouvert" % etat)
+            self.assertTrue(rouge(flanc + RAYON_CONGE, cadre), "%s : l'arc n'arrive pas sur le cadre" % etat)
+            self.assertTrue(any(rouge(flanc + d, cadre - 2) for d in range(1, RAYON_CONGE)),
+                            "%s : pas d'arc a droite du flanc" % etat)
+            cellule.deleteLater()
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

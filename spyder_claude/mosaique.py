@@ -34,6 +34,9 @@ from qtpy.QtWidgets import (QFrame, QHBoxLayout, QLabel, QSizePolicy, QSpacerIte
                             QSplitter, QStyle, QToolButton, QVBoxLayout, QWidget)
 
 from spyder_konsole.konsole_view import eclaircir
+# Conge de l'onglet de cellule, ecrit une fois dans la mosaique du Terminal ; MARGE_CONGE
+# sert aussi au dernier onglet de Claude Dock (autonome.fenetre.BarreOnglets).
+from spyder_konsole.mosaique import MARGE_CONGE, RAYON_CONGE
 
 from spyder_claude.compteurs import Compteur
 
@@ -59,6 +62,7 @@ TAILLE_COMPTEUR = 14
 #: cadran (11/10/2026 : « il faut prevoir une petite marge a droite du tachymetre », il
 #: touchait le contour) ; la croix a pris sa place au bord le meme jour.
 MARGE_DROITE_ONGLET = 5
+
 
 #: Espace entre le cadran et la croix, en mosaique comme en onglets (onglet_compteur.py).
 ESPACE_COMPTEUR_CROIX = 2
@@ -112,20 +116,66 @@ class _Onglet(QFrame):
     bleu vif, comme les fenetres, quand il est selectionne (sans ligne en bas) ». Ecarte :
     un `border: 2px` dans la feuille, qui decale d'1px le texte et la croix (le contenu
     suit l'epaisseur du bord) et casse leur calage sur les onglets.
+
+    Au pied du flanc droit, un conge concave le raccorde au trait haut du cadre, comme
+    l'onglet actif du fork sur son volet (« traite Claude Dock et la mosaique »,
+    utilisateur, 12/10/2026) ; peint dans la marge droite de la feuille (MARGE_CONGE), hors
+    du cadre de l'onglet. Le flanc gauche, lui, prolonge le bord gauche du cadre : pas de
+    conge. Au focus, le liseret suit l'arc, un pixel a l'interieur.
     """
 
     _liseret = None
+    _bord = _fond = None
 
     def poser_liseret(self, couleur):
         if couleur != self._liseret:
             self._liseret = couleur
             self.update()
 
+    def poser_conge(self, bord, fond):
+        """Couleurs du trait du cadre et du fond de l'onglet, reprises par le conge."""
+        if (bord, fond) != (self._bord, self._fond):
+            self._bord, self._fond = bord, fond
+            self.update()
+
     def paintEvent(self, evenement):
         QFrame.paintEvent(self, evenement)
-        if self._liseret is None:
-            return
-        r = QRectF(self.rect()).adjusted(1.5, 1.5, -1.5, 0)
+        peintre = QPainter(self)
+        peintre.setRenderHint(QPainter.Antialiasing)
+        # Colonne du flanc droit : la marge du conge est hors du cadre de la feuille.
+        droite = self.width() - 1 - MARGE_CONGE
+        if self._liseret is not None:
+            self._peindre_liseret(peintre, droite)
+        # Apres le liseret, dont le conge recouvre l'angle.
+        if self._bord not in (None, "transparent"):
+            self._peindre_conge(peintre, droite)
+        peintre.end()
+
+    def _peindre_conge(self, peintre, droite):
+        # Le trait haut du cadre de la vue est l'avant-derniere ligne de l'onglet, qui descend
+        # de DEBORD_ONGLET sur elle ; le liseret, la derniere. Arcs centres sur le milieu des
+        # pixels de ces traits (cf. patch_spyder_arrondi_onglet.py du generator) : le fond de
+        # l'onglet recouvre d'abord l'angle droit des traits, puis les arcs le remplacent.
+        rayon = RAYON_CONGE
+        cx, cy = droite + 0.5 + rayon, self.height() - 1.5 - rayon
+        arcs = [(rayon, self._bord)]
+        if self._liseret is not None:
+            arcs.append((rayon + 1, self._liseret))
+        exterieur = arcs[-1][0]
+        coin = QPainterPath()
+        coin.addRect(QRectF(cx - exterieur - 0.5, cy, exterieur + 0.5, exterieur + 0.5))
+        disque = QPainterPath()
+        disque.addEllipse(QPointF(cx, cy), rayon, rayon)
+        peintre.fillPath(coin.subtracted(disque), QColor(self._fond))
+        # Au repos (un seul arc), la derniere ligne est dans la vue, sous son trait : le bas du
+        # flanc y depasserait de l'arc.
+        peintre.fillRect(QRectF(droite, cy + exterieur + 0.5, 1, 1), QColor(self._fond))
+        for r, couleur in arcs:
+            peintre.setPen(QPen(QColor(couleur), 1))
+            peintre.drawArc(QRectF(cx - r, cy - r, 2 * r, 2 * r), 180 * 16, 90 * 16)
+
+    def _peindre_liseret(self, peintre, droite):
+        r = QRectF(0, 0, droite + 1, self.height()).adjusted(1.5, 1.5, -1.5, 0)
         rayon = 3
         chemin = QPainterPath(QPointF(r.left(), r.bottom()))
         chemin.lineTo(r.left(), r.top() + rayon)
@@ -133,11 +183,8 @@ class _Onglet(QFrame):
         chemin.lineTo(r.right() - rayon, r.top())
         chemin.quadTo(r.topRight(), r.topRight() + QPointF(0, rayon))
         chemin.lineTo(r.right(), r.bottom())
-        peintre = QPainter(self)
-        peintre.setRenderHint(QPainter.Antialiasing)
         peintre.setPen(QPen(QColor(self._liseret), 1))
         peintre.drawPath(chemin)
-        peintre.end()
 
 
 class _LigneSousOnglet(QHBoxLayout):
@@ -469,10 +516,12 @@ class Cellule(QFrame):
             # Rayon remis a 0 d'abord : la feuille de Spyder arrondit aussi le BAS des
             # QFrame, qui ecornait la jonction avec la vue (banc du 11/10/2026).
             " border-radius: 0px;"
-            " border-top-left-radius: 4px; border-top-right-radius: 4px; }"
-            % (self._fond_onglet(), self._couleur_cadre))
+            " border-top-left-radius: 4px; border-top-right-radius: 4px;"
+            " margin-right: %dpx; }"
+            % (self._fond_onglet(), self._couleur_cadre, MARGE_CONGE))
         if feuille != self._onglet.styleSheet():
             self._onglet.setStyleSheet(feuille)
+        self._onglet.poser_conge(self._couleur_cadre, self._fond_onglet())
 
     def liberer(self):
         """Detache la vue et la rend a l'appelant. La cellule devient jetable.

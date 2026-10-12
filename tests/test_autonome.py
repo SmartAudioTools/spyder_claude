@@ -373,6 +373,33 @@ class TestRendu(Banc):
         APP.processEvents()
         self.assertEqual(positions(f._mosaique._boutons_de_titre), en_onglets)
 
+    def test_conge_droit_du_dernier_onglet_dans_la_barre(self):
+        """« traite Claude Dock » (utilisateur, 12/10/2026) : la barre bute sur les boutons
+        de coin, et le conge droit du dernier onglet actif, peint hors d'elle, etait coupe -
+        le flanc s'arretait au-dessus du cadre. Un faux conge (un carre rouge a droite du
+        flanc, la ou le fork peint le sien) doit se voir, fenetre large ou titres raccourcis."""
+        from qtpy.QtCore import QRect
+        from qtpy.QtGui import QColor
+        from spyder_claude.autonome.fenetre import MARGE_CONGE
+
+        def faux_conge(barre, peintre):
+            zone = barre.tabRect(barre.currentIndex())
+            peintre.fillRect(QRect(zone.right() + 1, 0, MARGE_CONGE - 1, 4), QColor("red"))
+        f = self.fenetre(theme=dict(self.theme(), peindre_conges=faux_conge))
+        f.show()
+        for _ in range(3):
+            f.ouvrir_session()
+        barre = f._onglets.tabBar()
+        for i in range(3):
+            f._onglets.setTabText(i, "une-session-au-titre-long")
+        for largeur in (1200, 400):
+            f.resize(largeur, 300)
+            APP.processEvents()
+            zone = barre.tabRect(2)
+            image = barre.grab().toImage()
+            self.assertEqual(image.pixelColor(zone.right() + MARGE_CONGE - 1, 1).name(),
+                             "#ff0000", f"largeur {largeur}")
+
     def test_sans_theme_ni_cadre_ni_teinte(self):
         f = self.fenetre()
         f.ouvrir_session()
