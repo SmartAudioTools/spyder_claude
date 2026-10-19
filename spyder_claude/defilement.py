@@ -37,7 +37,16 @@ compte les inversions depuis la derniere resynchronisation, ce qui la rend visib
 
 Tant que le haut n'est pas connu, l'etendue T n'est qu'un minorant : le pouce est HACHURE
 et la piste porte une page de marge au-dela de T.
+
+CE QUE LA SORTIE AJOUTE se MESURE (« on ne peut vraiment pas mesurer le nombre de lignes
+apporte par chaque nouvelle reponse ?? », 19/10/2026) : pendant que Claude ecrit, le texte de
+l'ecran glisse d'autant, en bas comme vue remontee (Claude ne fige pas la vue). `suivre` lit
+ce glissement entre deux ecrans ; la somme fait grandir T sans perdre le haut connu. Mesure
+(outils_smartos/sonde_suivi.py) : exacte sur 4 reponses sur 5 ; la 5e, sur un ecran pas encore
+plein, saute d'un coup au-dela de tout contenu commun - AMBIGU, et le pouce se rehachure.
 """
+
+from collections import Counter
 
 from qtpy.QtCore import QEvent, QRectF, Qt, QTimer
 from qtpy.QtGui import QBrush, QColor, QPainter
@@ -48,6 +57,7 @@ CTRL_FIN = "\x1b[1;5F"
 PAGE_HAUT, PAGE_BAS = "\x1b[5~", "\x1b[6~"
 
 
+PREUVES = 3     # lignes uniques concordantes pour croire un decalage (cf. suivre)
 EPINGLEES = 8   # lignes distinctes qui ne bougent jamais : question en tete, pied (5 mesurees)
 
 
@@ -78,6 +88,35 @@ def decalage(avant, apres, attendu):
         if score > score_max:
             meilleur, score_max = k, score
     return meilleur
+
+
+def suivre(avant, apres):
+    """Decalage k du contenu entre deux ecrans (une ligne au rang i passe au rang i - k).
+
+    Ne votent que les lignes non vides presentes UNE seule fois sur chacun des deux ecrans :
+    une ligne vide, une barriere de code, un motif repete ne disent rien. Une ligne epinglee
+    (question en tete, pied) vote 0 ; elle ne doit pas emporter un vrai defilement, d'ou :
+    le meilleur k non nul gagne s'il a PREUVES votes et au moins le double du suivant non nul.
+    Les lignes uniques DISPARUES trahissent un saut que les epinglees masqueraient (redessin,
+    plus d'un ecran d'un coup) : un decalage k en fait sortir k par le haut, plus la ligne en
+    cours d'ecriture ; au-dela de k + 2, rien n'est cru.
+    Rend (k, votes), k None si l'ecran ne permet pas de conclure.
+    """
+    if avant == apres:
+        return 0, {}
+    uniques = [Counter(l for l in ecran if l.strip()) for ecran in (avant, apres)]
+    rang = {l: i for i, l in enumerate(apres) if uniques[1][l] == 1}
+    votes = Counter(i - rang[l] for i, l in enumerate(avant)
+                    if uniques[0][l] == 1 and l in rang)
+    disparues = sum(1 for l in avant if uniques[0][l] == 1 and l not in rang)
+    non_nuls = sorted(((n, k) for k, n in votes.items() if k), reverse=True)
+    k, n = (non_nuls[0][1], non_nuls[0][0]) if non_nuls else (0, votes[0])
+    second = non_nuls[1][0] if len(non_nuls) > 1 else 0
+    # deux voix suffisent sans concurrente : le debut d'une reponse n'a guere de lignes uniques
+    # (accueil, question, indicateur) et c'est la que la 2e sonde perdait 10 lignes
+    if (n >= PREUVES and n >= 2 * second or n >= 2 and not second) and disparues <= max(k, 0) + 2:
+        return k, dict(votes)
+    return None, dict(votes)
 
 
 class ModeleDefilement:
@@ -125,9 +164,9 @@ class ModeleDefilement:
         self.haut_connu = True      # le precedent reste celui des crans (une page n'y touche pas)
         self.inversions = 0
 
-    def nouvel_echange(self):
-        """Une question part : le contenu va grandir, le haut connu ne l'est plus."""
-        self.haut_connu = False
+    def grandi(self, lignes):
+        """La sortie a ajoute `lignes` lignes sous la vue (retire si < 0) ; d ne bouge pas."""
+        self.T = max(self.T + lignes, self.d)
 
 
 class BarreDefilementEmulee(QWidget):
@@ -142,6 +181,8 @@ class BarreDefilementEmulee(QWidget):
     #: L'ecran est relu quand la sortie s'est tue CALME ms (plafond : PLAFOND ms).
     CALME = 120
     PLAFOND = 800
+    #: Pendant la sortie, l'ecran est relu au plus toutes les SUIVI ms (0,1 ms la lecture).
+    SUIVI = 40
 
     def __init__(self, vue):
         super().__init__(vue)
@@ -154,6 +195,7 @@ class BarreDefilementEmulee(QWidget):
         self._glisse = None             # (y de depart, d de depart) pendant un glisser
         self._reste_molette = 0         # huitiemes de degre pas encore convertis en crans
         self._actif = False             # Claude defile-t-il lui-meme ? cf. _sur_mode
+        self._ecran = None              # (ecran, d) de reference du suivi, cf. _suivre
         self.setFixedWidth(self.LARGEUR)
         self.setCursor(Qt.ArrowCursor)
         self.hide()
@@ -164,6 +206,11 @@ class BarreDefilementEmulee(QWidget):
         self._cadence = QTimer(self, singleShot=True, interval=self.INTERVALLE)
         self._cadence.setTimerType(Qt.PreciseTimer)
         self._cadence.timeout.connect(self._avancer)
+        self._suivi = QTimer(self, singleShot=True, interval=self.SUIVI)
+        self._suivi.timeout.connect(self._suivre)
+        # Nos envois font glisser l'ecran eux aussi : on ne relit qu'une fois Claude repeint.
+        self._occupe = QTimer(self, singleShot=True, interval=self.CALME)
+        self._occupe.timeout.connect(self._suivre)
         vue.sig_sortie.connect(self._sur_sortie)
         vue.sig_defilement_au_programme.connect(self._sur_mode)
         vue.ajouter_a_droite(self)
@@ -177,7 +224,7 @@ class BarreDefilementEmulee(QWidget):
     def _sur_mode(self, actif):
         self.modele.reinitialiser()
         self._cible = 0
-        self._verification = self._paquet = self._page_claude = None
+        self._verification = self._paquet = self._page_claude = self._ecran = None
         self._actif = actif
         self.setVisible(actif)
 
@@ -192,26 +239,63 @@ class BarreDefilementEmulee(QWidget):
             touche, mods = evenement.key(), evenement.modifiers()
             if touche in (Qt.Key_Return, Qt.Key_Enter) and not mods & Qt.ShiftModifier:
                 # Une question part : on la suit EN BAS, de facon exacte, plutot que de
-                # supposer ce que Claude fait de la vue a l'envoi.
+                # supposer ce que Claude fait de la vue a l'envoi. Son echo arrive pendant ce
+                # saut, que le suivi ne mesure pas (cf. _suivre) : le haut n'est plus connu.
                 if self.modele.d:
                     self._en_bas()
-                self.modele.nouvel_echange()
-                self.update()
+                    self.modele.haut_connu = False
             elif touche == Qt.Key_O and mods & Qt.ControlModifier:
                 # Ctrl+O bascule la transcription : autre contenu, autre etendue.
                 self.modele.reinitialiser()
                 self._cible = 0
+                self._ecran = None
+                self._occupe.start()
                 self.update()
         elif genre == QEvent.Resize and objet is self._terminal:
-            # Les lignes se recoupent : rien de ce qu'on savait ne tient. Retour en bas.
-            self.modele.reinitialiser()
-            self._page_claude = None
-            self._en_bas()
+            if evenement.size().width() == evenement.oldSize().width() and not self.modele.d:
+                # Hauteur seule, en bas : Claude ne recoupe rien, T + lignes visibles reste
+                # constant (sonde_suivi) ; le suivi le lit sur l'ecran une fois repeint.
+                self._page_claude = None
+                self._occupe.start()
+            else:               # les lignes se recoupent : rien ne tient. Retour en bas.
+                self.modele.reinitialiser()
+                self._page_claude = self._ecran = None
+                self._en_bas()
         return False
 
     def _sur_sortie(self):
         if self._verification is not None:
             self._calme.start()
+        if not self._suivi.isActive():
+            self._suivi.start()
+
+    def _suivre(self):
+        """Fait grandir T de ce que la sortie a ajoute : g = k + (d - d de reference).
+
+        Le glissement k de l'ecran melange la sortie (le texte monte de g) et nos propres
+        deplacements (il descend quand on remonte), que le modele connait. Pendant un envoi
+        de la barre, rien n'est relu : la reference reste celle d'avant, et la comparaison se
+        fait sur l'ecran repeint. Ecran illisible (ambigu) : le haut n'est plus connu - sauf
+        si c'est notre propre saut qui l'a rendu illisible (plus d'un ecran, Ctrl+End depuis
+        loin) : la sortie de ces quelques ms est perdue, c'est la limite connue.
+        """
+        if not self._actif or self._occupe.isActive() or self._verification is not None:
+            return
+        if self._terminal.selectedText(False).strip():
+            self._ecran = None          # lire l'ecran passe par la selection et l'effacerait
+            self.modele.haut_connu = False
+            self.update()
+            return
+        ecran, d = self._vue.texte_ecran(), self.modele.d
+        reference, self._ecran = self._ecran, (ecran, d)
+        if reference is None or reference[0] == ecran:
+            return                      # ecran immobile : aucune preuve de croissance
+        k = suivre(reference[0], ecran)[0]
+        if k is not None:
+            self.modele.grandi(k + d - reference[1])
+        elif d == reference[1]:
+            self.modele.haut_connu = False
+        self.update()
 
     # ------------------------------------------------------------------ mouvement
 
@@ -222,8 +306,12 @@ class BarreDefilementEmulee(QWidget):
             self._cible = min(self._cible, self.modele.T)
         self._avancer()
 
+    def _envoyer(self, texte):
+        self._occupe.start()
+        self._vue.envoyer(texte)
+
     def _en_bas(self, cible=0):
-        self._vue.envoyer(CTRL_FIN)
+        self._envoyer(CTRL_FIN)
         self.modele.en_bas()
         self._cible = cible
         self._cadence.start()           # suivi AUSSITOT d'un cran, Ctrl+End est ignore (sonde_barre)
@@ -257,12 +345,15 @@ class BarreDefilementEmulee(QWidget):
         if ecart > 0 and not modele.haut_connu and modele.d >= modele.T:
             # Zone inconnue : une page ou un paquet de crans, l'ecran relu apres chacun.
             avant = self._vue.texte_ecran()
+            if not varie(avant):        # rien ne prouverait la butee : supposer, c'est deriver
+                self._cible = modele.d  # (accueil d'une conversation neuve : 1551 lignes
+                return                  # inventees, sonde_suivi du 19/10/2026)
             if page and ecart >= page:
-                self._vue.envoyer(PAGE_HAUT)
+                self._envoyer(PAGE_HAUT)
                 modele.pages(page, 1)
                 self._verifier_plus_tard(modele.d - page, avant)
             elif not page and ecart >= self._vue.lignes_ecran() and varie(avant):
-                self._vue.envoyer(PAGE_HAUT)     # la page d'etalonnage : sa taille est lue apres
+                self._envoyer(PAGE_HAUT)     # la page d'etalonnage : sa taille est lue apres
                 self._verifier_plus_tard(modele.d, avant, etalonnage=True)
             else:
                 self._paquet = (modele.d, avant, min(ecart, self.PAQUET))
@@ -272,7 +363,7 @@ class BarreDefilementEmulee(QWidget):
         if pages and ecart > 0 and not modele.haut_connu:
             pages = min(pages, (modele.T - modele.d) // page)    # au-dela, zone inconnue
         if pages:                       # d'un seul jet : les pages n'accelerent pas
-            self._vue.envoyer((PAGE_HAUT if sens > 0 else PAGE_BAS) * pages)
+            self._envoyer((PAGE_HAUT if sens > 0 else PAGE_BAS) * pages)
             modele.pages(pages * page, sens)
             self._cadence.start()
             self.update()
@@ -286,6 +377,7 @@ class BarreDefilementEmulee(QWidget):
         self.update()
 
     def _cran(self, sens):
+        self._occupe.start()
         self._vue.envoyer_molette(sens)
         self.modele.envoyes(1, sens)
         self._cadence.start()
@@ -310,6 +402,7 @@ class BarreDefilementEmulee(QWidget):
             self.modele.en_haut(d_avant + bouge)
             self._cible = min(self._cible, self.modele.d)
         self.update()
+        self._suivi.start()             # la relecture que _suivre a laissee passer
         self._avancer()
 
     # ------------------------------------------------------------------ dessin

@@ -27,10 +27,19 @@ from qtpy.QtCore import QCoreApplication, Signal  # noqa: E402
 from qtpy.QtWidgets import QApplication, QHBoxLayout, QWidget  # noqa: E402
 
 from spyder_claude.defilement import (CTRL_FIN, PAGE_BAS, PAGE_HAUT,  # noqa: E402
-                                      BarreDefilementEmulee, ModeleDefilement)
+                                      BarreDefilementEmulee, ModeleDefilement,
+                                      suivre)
 
 APPLICATION = QApplication.instance() or QApplication(sys.argv)
+GARDES = []
 SGR = re.compile(r"\x1b\[<(64|65);\d+;\d+M")
+
+
+class FauxTerminal(QWidget):
+    selection = ""
+
+    def selectedText(self, _sauts):  # noqa: N802 - API QTermWidget
+        return self.selection
 
 
 class FauxClaude(QWidget):
@@ -44,7 +53,7 @@ class FauxClaude(QWidget):
         self.touche = touche       # lignes par touche page (18 sur 44 lignes chez Claude)
         self.pages = 0
         QHBoxLayout(self)
-        self.terminal = QWidget(self)
+        self.terminal = FauxTerminal(self)
         self.layout().addWidget(self.terminal)
         self.page = page
         self.lignes = ["" if uniforme else "ligne %d" % i for i in range(contenu)]
@@ -108,6 +117,12 @@ class FauxClaude(QWidget):
         pas = 2 if maintenant - precedent < 0.04 else 1     # acceleration (sonde --cadence)
         self.p = min(max(0, self.p + sens * pas), self.haut)
 
+    def ecrire(self, n):
+        """Claude ajoute `n` lignes : la vue garde sa distance au bas (sonde_suivi, « remonte »)."""
+        debut = len(self.lignes)
+        self.lignes += ["sortie %d" % i for i in range(debut, debut + n)]
+        self.sig_sortie.emit()
+
     @property
     def haut(self):
         return len(self.lignes) - self.page + 1
@@ -120,6 +135,35 @@ def attendre(barre, plafond=15):
            ) and time.monotonic() - debut < plafond:
         QCoreApplication.processEvents()
         time.sleep(0.01)
+
+
+class TestSuivre(unittest.TestCase):
+    """La lecture du glissement de l'ecran (ex auto-test de sonde_suivi)."""
+
+    def test_cas(self):
+        def assert_k(avant, apres, k):
+            self.assertEqual(suivre(avant, apres)[0], k)
+        pied = ["", "> ", "", "? for shortcuts"]
+        texte = ["ligne %d" % i for i in range(200)]
+
+        def ecran(fin, hauteur=20):
+            return ["> question"] + texte[fin - hauteur:fin] + pied
+        assert_k(ecran(50), ecran(53), 3)
+        assert_k(ecran(50), ecran(50), 0)
+        assert_k(ecran(50), ecran(50 + 25), None)          # plus d'un ecran : rien en commun
+        vide = ["> question"] + [""] * 20 + pied
+        assert_k(vide, vide[:5] + ["x"] + vide[6:], 0)      # le pied atteste l'immobilite
+        vide = [""] * 20 + ["> "]
+        assert_k(vide, vide[:5] + ["x"] + vide[6:], None)   # rien d'unique qui bouge
+        # ligne en cours d'ecriture qui change sans defilement
+        a, b = ecran(50), ecran(50)
+        b[20] = b[20] + " suite"
+        assert_k(a, b, 0)
+        # repetitions : les lignes vides et les barrieres ne votent pas
+        texte[40:60] = ["", "```"] * 10
+        assert_k(ecran(70), ecran(72), 2)
+        peu = ["> q", "", "a", "", "b", "", "", "", ""] + pied
+        assert_k(peu, peu[2:] + ["", ""], 2)
 
 
 class TestModele(unittest.TestCase):
@@ -145,6 +189,10 @@ class TestBarre(unittest.TestCase):
         claude = FauxClaude(contenu, **options)
         barre = BarreDefilementEmulee(claude)
         claude.sig_defilement_au_programme.emit(True)
+        # gardes jusqu'a la fin : ramasses pendant qu'un autre se construit, PySide plante
+        # (erreurs intermittentes dans QTimer() et eventFilter, 19/10/2026)
+        GARDES.append((claude, barre))
+        self.addCleanup(claude.sig_defilement_au_programme.emit, False)
         return claude, barre
 
     def test_la_molette_suit_la_vraie_position(self):
@@ -194,6 +242,13 @@ class TestBarre(unittest.TestCase):
         attendre(barre)
         self.assertFalse(barre.modele.haut_connu)
 
+    def test_un_ecran_sans_preuve_ne_fait_pas_deriver(self):
+        """Accueil d'une conversation neuve : rien ne bouge, rien ne prouve (sonde_suivi)."""
+        claude, barre = self.monter(contenu=9, uniforme=True)
+        barre.aller_a(1000)
+        attendre(barre)
+        self.assertEqual((claude.p, barre.modele.d, barre.modele.T), (0, 0, 0))
+
     def test_entree_redescend_avant_d_envoyer(self):
         from qtpy.QtCore import QEvent, Qt
         from qtpy.QtGui import QKeyEvent
@@ -202,6 +257,67 @@ class TestBarre(unittest.TestCase):
         QApplication.sendEvent(claude.terminal,
                                QKeyEvent(QEvent.KeyPress, Qt.Key_Return, Qt.NoModifier))
         self.assertEqual((claude.p, barre.modele.d), (0, 0))
+
+    def suivre_jusqu_au_calme(self, barre, duree=0.4):
+        attendre(barre)
+        fin = time.monotonic() + duree
+        while time.monotonic() < fin:
+            QCoreApplication.processEvents()
+            time.sleep(0.01)
+
+    def connaitre_le_haut(self, contenu=60):
+        claude, barre = self.monter(contenu=contenu)
+        barre.aller_a(1000)
+        attendre(barre)
+        barre.aller_a(0)
+        self.suivre_jusqu_au_calme(barre)
+        self.assertTrue(barre.modele.haut_connu)
+        return claude, barre
+
+    def test_la_sortie_en_bas_fait_grandir_le_haut_connu(self):
+        claude, barre = self.connaitre_le_haut()
+        for _ in range(5):
+            claude.ecrire(3)
+            self.suivre_jusqu_au_calme(barre, 0.08)
+        self.suivre_jusqu_au_calme(barre)
+        self.assertEqual(barre.modele.T, claude.haut)
+        self.assertTrue(barre.modele.haut_connu)
+
+    def test_la_sortie_vue_remontee_aussi(self):
+        claude, barre = self.connaitre_le_haut()
+        barre.aller_a(6)
+        self.suivre_jusqu_au_calme(barre)
+        claude.ecrire(4)
+        self.suivre_jusqu_au_calme(barre)
+        self.assertEqual((barre.modele.d, barre.modele.T), (claude.p, claude.haut))
+        self.assertTrue(barre.modele.haut_connu)
+
+    def test_nos_deplacements_ne_sont_pas_de_la_sortie(self):
+        """Doit rester SILENCIEUX : remonter, redescendre, sans sortie, ne change pas T."""
+        claude, barre = self.connaitre_le_haut()
+        T = barre.modele.T
+        for cible in (7, 2, 30, 0):
+            barre.aller_a(cible)
+            self.suivre_jusqu_au_calme(barre)
+        claude.sig_sortie.emit()          # un rafraichissement du pied, sans contenu neuf
+        self.suivre_jusqu_au_calme(barre)
+        self.assertEqual((barre.modele.T, barre.modele.haut_connu), (T, True))
+
+    def test_un_saut_illisible_rehachure(self):
+        claude, barre = self.connaitre_le_haut()
+        claude.ecrire(claude.page + 5)    # plus d'un ecran d'un seul rafraichissement
+        self.suivre_jusqu_au_calme(barre)
+        self.assertFalse(barre.modele.haut_connu)
+
+    def test_une_selection_n_est_pas_effacee(self):
+        claude, barre = self.connaitre_le_haut()
+        claude.terminal.selection = "texte choisi"
+        lus = []
+        claude.texte_ecran, lire = (lambda: lus.append(1) or lire()), claude.texte_ecran
+        claude.ecrire(2)
+        self.suivre_jusqu_au_calme(barre)
+        self.assertEqual(lus, [])
+        self.assertFalse(barre.modele.haut_connu)
 
     def test_cachee_hors_du_plein_ecran(self):
         claude, barre = self.monter()
