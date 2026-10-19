@@ -21,7 +21,9 @@ import unittest
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from qtpy.QtCore import QEvent, QPoint, QRect  # noqa: E402
+from qtpy.QtCore import QEvent, QPoint, QPointF, QRect, Qt  # noqa: E402
+from qtpy.QtGui import QMouseEvent  # noqa: E402
+from qtpy.QtTest import QTest  # noqa: E402
 from qtpy.QtWidgets import (QApplication, QVBoxLayout, QWidget)  # noqa: E402
 
 from spyder_claude.mosaique import (Cellule, Mosaique, TAILLE_BOUTON,  # noqa: E402
@@ -776,13 +778,18 @@ class TestBandeauColoreDeLaPremiereRangee(unittest.TestCase):
             texte = cellule._etiquette.contentsRect()
             centre = cellule._etiquette.mapTo(cellule, texte.topLeft()).y() \
                 + texte.height() / 2.0
-            mesures[compacte] = (colore, centre, vue.y())
+            onglet = cellule._onglet.geometry()   # sa partie visible : sans le debord du bas
+            mesures[compacte] = (colore, centre, vue.y(),
+                                 onglet.y() + (onglet.height() - Cellule.DEBORD_ONGLET) / 2.0)
             cellule.deleteLater()
         haute, compacte = mesures[False], mesures[True]
         self.assertGreater(compacte[0], 0)
         self.assertEqual(haute[0], compacte[0])            # meme onglet dans toutes les rangees
         self.assertLess(haute[0], TAILLE_BOUTON)           # plus les 44 px de la rangee
-        self.assertAlmostEqual(haute[1], 26.5, delta=0.5)  # texte cale sur les onglets (27.5 avant le 11/10 : l'onglet reserve DEBORD_ONGLET px en bas, le texte monte de 1)
+        # Texte centre dans l'onglet, debord exclu. Mesure RELATIVE depuis le 19/10/2026 :
+        # la hauteur de l'onglet suit la police, et l'ancienne valeur en dur (26.5) n'etait
+        # vraie qu'avec la police du poste de l'utilisateur, pas celle du banc offscreen.
+        self.assertAlmostEqual(haute[1], haute[3], delta=1)
         self.assertEqual(haute[2], TAILLE_BOUTON - Cellule.DEBORD_ONGLET)  # terminal sous ses 44 px, moins le debord de l'onglet
 
 
@@ -813,6 +820,67 @@ class TestCongeDeLOnglet(unittest.TestCase):
             self.assertTrue(any(rouge(flanc + d, cadre - 2) for d in range(1, RAYON_CONGE)),
                             "%s : pas d'arc a droite du flanc" % etat)
             cellule.deleteLater()
+
+
+class TestGlisserDeposer(BaseMosaique):
+    """« je souhaite pouvoir reorganiser les onglet par glissé / deposser et les fenetre en
+    vu mosaique également » (utilisateur, 19/10/2026). On tire l'onglet de titre d'une
+    cellule, on le lache sur une autre : la mosaique DEMANDE le nouvel ordre, c'est le
+    panneau qui redispose."""
+
+    def setUp(self):
+        super().setUp()
+        disposition_hote = QVBoxLayout(self.hote)
+        disposition_hote.addWidget(self.mosaique)
+        self.hote.resize(900, 600)
+        self.elements_ = self.elements(3)
+        self.mosaique.disposer(self.elements_)
+        self.hote.show()
+        APPLICATION.processEvents()
+        self.ordres = []
+        self.mosaique.sig_ordre_demande.connect(self.ordres.append)
+
+    def glisser(self, depart, arrivee, pas=None):
+        """Presse sur l'onglet de `depart`, lache au centre de la cellule `arrivee`."""
+        onglet = depart._onglet
+        cible = arrivee.mapToGlobal(arrivee.rect().center())
+        fin = onglet.mapFromGlobal(cible) if pas is None else QPoint(5 + pas, 5)
+        QTest.mousePress(onglet, Qt.LeftButton, Qt.NoModifier, QPoint(5, 5))
+        # Pas `QTest.mouseMove` : sous Qt5 il deplace le curseur sans rien envoyer au widget.
+        APPLICATION.sendEvent(onglet, QMouseEvent(QEvent.MouseMove, QPointF(fin), Qt.NoButton,
+                                                  Qt.LeftButton, Qt.NoModifier))
+        QTest.mouseRelease(onglet, Qt.LeftButton, Qt.NoModifier, fin)
+
+    def test_lacher_sur_une_autre_cellule_demande_le_nouvel_ordre(self):
+        a, b, c = [vue for vue, _ in self.elements_]
+        self.glisser(self.mosaique.cellule_de(a), self.mosaique.cellule_de(c))
+        self.assertEqual(self.ordres, [[b, c, a]])
+
+    def test_vers_l_avant(self):
+        a, b, c = [vue for vue, _ in self.elements_]
+        self.glisser(self.mosaique.cellule_de(c), self.mosaique.cellule_de(a))
+        self.assertEqual(self.ordres, [[c, a, b]])
+
+    def test_lacher_sur_sa_propre_cellule_ne_demande_rien(self):
+        a = self.elements_[0][0]
+        self.glisser(self.mosaique.cellule_de(a), self.mosaique.cellule_de(a))
+        self.assertEqual(self.ordres, [])
+
+    def test_un_simple_clic_ne_glisse_pas(self):
+        """Sous la distance de glisser, c'est un clic : rien ne bouge."""
+        cellules = self.mosaique.cellules()
+        self.glisser(cellules[0], cellules[2], pas=1)
+        self.assertEqual(self.ordres, [])
+
+    def test_la_croix_ferme_sans_glisser(self):
+        """La croix est un QToolButton a part, pose dans l'onglet : son clic ferme la
+        session et ne compte pas comme le debut d'un glisser."""
+        a = self.elements_[0][0]
+        fermees = []
+        self.mosaique.sig_fermeture_demandee.connect(fermees.append)
+        QTest.mouseClick(self.mosaique.cellule_de(a)._bouton_fermer, Qt.LeftButton)
+        self.assertEqual(fermees, [a])
+        self.assertEqual(self.ordres, [])
 
 
 if __name__ == "__main__":

@@ -28,10 +28,10 @@ Aucun import Spyder : le module se deroule dans un test offscreen ordinaire.
 
 import math
 
-from qtpy.QtCore import QPointF, QRectF, Qt, Signal
+from qtpy.QtCore import QPoint, QPointF, QRectF, Qt, Signal
 from qtpy.QtGui import QColor, QPainter, QPainterPath, QPen
-from qtpy.QtWidgets import (QFrame, QHBoxLayout, QLabel, QSizePolicy, QSpacerItem,
-                            QSplitter, QStyle, QToolButton, QVBoxLayout, QWidget)
+from qtpy.QtWidgets import (QApplication, QFrame, QHBoxLayout, QLabel, QSizePolicy,
+                            QSpacerItem, QSplitter, QStyle, QToolButton, QVBoxLayout, QWidget)
 
 from spyder_konsole.konsole_view import eclaircir
 # Conge de l'onglet de cellule, ecrit une fois dans la mosaique du Terminal ; MARGE_CONGE
@@ -122,10 +122,42 @@ class _Onglet(QFrame):
     utilisateur, 12/10/2026) ; peint dans la marge droite de la feuille (MARGE_CONGE), hors
     du cadre de l'onglet. Le flanc gauche, lui, prolonge le bord gauche du cadre : pas de
     conge. Au focus, le liseret suit l'arc, un pixel a l'interieur.
+
+    On le TIRE pour deplacer la session dans la mosaique (« reorganiser [...] les fenetre
+    en vu mosaique », utilisateur, 19/10/2026) : au-dela de `startDragDistance`, le
+    relacher emet `sig_lache` avec le point global, et la mosaique cherche la cellule
+    dessous. Ecarte : QDrag et ses mimeData, dont la cible serait le TERMINAL de la
+    cellule visee, qui accepte ou avale les depots ; la saisie implicite de la souris par
+    l'onglet presse suffit, et se deroule offscreen.
     """
+
+    #: Emis au relacher d'un glisser, avec le point GLOBAL ou la souris a ete lachee.
+    sig_lache = Signal(QPoint)
 
     _liseret = None
     _bord = _fond = None
+    _depart = None
+    _glisse = False
+
+    def mousePressEvent(self, evenement):  # noqa: N802 - API Qt
+        if evenement.button() == Qt.LeftButton:
+            self._depart = self.mapToGlobal(evenement.pos())
+            self._glisse = False
+        evenement.accept()
+
+    def mouseMoveEvent(self, evenement):  # noqa: N802 - API Qt
+        point = self.mapToGlobal(evenement.pos())
+        if (self._depart is not None and not self._glisse
+                and (point - self._depart).manhattanLength()
+                >= QApplication.startDragDistance()):
+            self._glisse = True
+            self.setCursor(Qt.ClosedHandCursor)
+
+    def mouseReleaseEvent(self, evenement):  # noqa: N802 - API Qt
+        if self._glisse and evenement.button() == Qt.LeftButton:
+            self.unsetCursor()
+            self.sig_lache.emit(self.mapToGlobal(evenement.pos()))
+        self._depart, self._glisse = None, False
 
     def poser_liseret(self, couleur):
         if couleur != self._liseret:
@@ -248,6 +280,9 @@ class Cellule(QFrame):
     #: avec la vue concernee ; c'est le panneau qui sait arreter une session.
     sig_fermeture_demandee = Signal()
 
+    #: Emis quand l'onglet de CETTE cellule a ete tire puis lache, avec le point global.
+    sig_lachee = Signal(QPoint)
+
     def __init__(self, vue, titre="", parent=None, compacte=False,
                  hauteur_bandeau=TAILLE_BOUTON):
         """`compacte` : bandeau au plus bas, pour les rangees sous la premiere.
@@ -314,6 +349,7 @@ class Cellule(QFrame):
         # `_LigneSousOnglet`) ; leve au-dessus d'elle a la fin du constructeur.
         self._onglet = _Onglet(self)
         self._onglet.setObjectName("onglet_cellule_claude")
+        self._onglet.sig_lache.connect(self.sig_lachee)
         dans_onglet = QHBoxLayout(self._onglet)
         # A droite, la croix ne doit pas toucher le bord de l'onglet.
         dans_onglet.setContentsMargins(0, 0, MARGE_DROITE_ONGLET, self.DEBORD_ONGLET)
@@ -580,6 +616,11 @@ class Mosaique(QWidget):
     #: panneau. Le panneau tient la preference ; ici on ne fait que la demander.
     sig_disposition_demandee = Signal()
 
+    #: Emis avec les vues dans leur NOUVEL ordre, quand l'utilisateur a tire l'onglet
+    #: d'une cellule sur une autre. La mosaique ne redispose pas elle-meme : l'ordre des
+    #: sessions appartient au panneau (onglets, sessions memorisees), qui la redispose.
+    sig_ordre_demande = Signal(list)
+
     #: Taille demandee a chaque cellule par `egaliser`. Volontairement bien plus grande que
     #: tout ecran : ce qui compte est que les parts soient EGALES et que la contrainte de
     #: taille minimale ne morde pas (cf. `egaliser`). Qt normalise a la place reelle.
@@ -711,6 +752,8 @@ class Mosaique(QWidget):
                 # redisposition.
                 cellule.sig_fermeture_demandee.connect(
                     lambda _v=vue: self.sig_fermeture_demandee.emit(_v))
+                cellule.sig_lachee.connect(
+                    lambda point, _v=vue: self._deplacer(_v, point))
                 rangee.addWidget(cellule)
                 self._cellules.append(cellule)
             reste = reste[combien:]
@@ -930,6 +973,18 @@ class Mosaique(QWidget):
 
     def cellules(self):
         return list(self._cellules)
+
+    def _deplacer(self, vue, point):
+        """`vue` lachee au point global `point` : elle prend la place de la cellule
+        dessous, les autres glissent d'un cran, comme un onglet deplace dans sa barre."""
+        ordre = [cellule.vue for cellule in self._cellules]
+        for index, cellule in enumerate(self._cellules):
+            if cellule.rect().contains(cellule.mapFromGlobal(point)):
+                if cellule.vue is not vue:
+                    ordre.remove(vue)
+                    ordre.insert(index, vue)
+                    self.sig_ordre_demande.emit(ordre)
+                return
 
     def cellule_de(self, vue):
         for cellule in self._cellules:

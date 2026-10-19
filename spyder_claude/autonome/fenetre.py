@@ -398,6 +398,7 @@ class FenetreClaude(QMainWindow):
             self._onglets, theme and theme["peindre_conges"]))
         self._onglets.setDocumentMode(True)
         self._onglets.setMovable(True)
+        self._onglets.tabBar().tabMoved.connect(self._suivre_l_ordre_des_onglets)
         self._onglets.tabBar().installEventFilter(self)   # cf. `_teinter_les_onglets`
         # Les titres en entier tant qu'ils tiennent tous ; au-dela, Qt les raccourcit tous
         # par la gauche plutot que de faire defiler.
@@ -458,6 +459,7 @@ class FenetreClaude(QMainWindow):
             lambda: self.basculer_mosaique(False))
         self._mosaique.sig_nouvelle_demande.connect(lambda: self.ouvrir_session())
         self._mosaique.sig_fermeture_demandee.connect(self._fermer_session)
+        self._mosaique.sig_ordre_demande.connect(self._reordonner)
         self._mosaique.poser_pleine_echelle(self.vitesse_maximale())
         disposition.addWidget(self._mosaique)
 
@@ -1000,6 +1002,22 @@ class FenetreClaude(QMainWindow):
 
     def _elements(self):
         return [(vue, self._titres.get(vue, "")) for vue in self._vues]
+
+    def _suivre_l_ordre_des_onglets(self, *_ignore):
+        """Un onglet tire a la souris (`setMovable`) : `_vues` prend l'ordre de la barre.
+        Sans cela, l'ordre se perdait au passage en mosaique, que `_vues` dispose, et a la
+        reprise, qui rouvre dans l'ordre memorise (« reorganiser les onglet par glisse /
+        deposser », utilisateur, 19/10/2026)."""
+        barre = [self._onglets.widget(i) for i in range(self._onglets.count())]
+        self._vues = [vue for vue in barre if vue in self._vues]
+        self._memoriser_les_sessions()
+
+    def _reordonner(self, vues):
+        """`Mosaique.sig_ordre_demande` : une cellule tiree sur une autre."""
+        self._vues = [vue for vue in vues if vue in self._vues]
+        self._mosaique.disposer(self._elements())
+        self._rafraichir_letat_affiche()
+        self._memoriser_les_sessions()
 
     def en_mosaique(self):
         return self._en_mosaique

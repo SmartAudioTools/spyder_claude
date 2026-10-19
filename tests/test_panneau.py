@@ -317,6 +317,27 @@ class TestBascule(unittest.TestCase):
         self.p.set_maximized_state(False)
         self.assertEqual(self.p._vues, avant)
 
+    def test_l_ordre_des_onglets_survit_a_la_mosaique(self):
+        """« je souhaite pouvoir reorganiser les onglet par glissé / deposser et les
+        fenetre en vu mosaique également » (utilisateur, 19/10/2026) : un onglet deplace
+        garde sa place en mosaique et au retour."""
+        un, deux = self.vues
+        self.p._onglets.tabBar().moveTab(0, 1)
+        self.assertEqual(self.p._vues, [deux, un])
+        self.p.set_maximized_state(True)
+        self.assertEqual([c.vue for c in self.p._mosaique.cellules()], [deux, un])
+        self.p.set_maximized_state(False)
+        self.assertEqual([self.p._onglets.widget(i) for i in range(2)], [deux, un])
+
+    def test_un_depot_en_mosaique_reordonne(self):
+        un, deux = self.vues
+        self.p.set_maximized_state(True)
+        self.p._mosaique.sig_ordre_demande.emit([deux, un])
+        self.assertTrue(self.p.en_mosaique())
+        self.assertEqual([c.vue for c in self.p._mosaique.cellules()], [deux, un])
+        self.p.set_maximized_state(False)
+        self.assertEqual([self.p._onglets.widget(i) for i in range(2)], [deux, un])
+
     def test_bouton_de_disposition_visible_seulement_agrandi_en_onglets(self):
         """Il proposerait sinon un etat inatteignable, ou serait cache par la mosaique.
 
@@ -1068,6 +1089,13 @@ class TestReouvertureDesSessions(FauxRegistre):
         self.p._fermer_onglet(0)
         self.p.relire_le_registre()
         self.assertEqual(self.p.get_conf(self.CLE), [["S2", "/d 2"]])
+
+    def test_un_onglet_deplace_change_l_ordre_memorise(self):
+        self.p._sessions_memorisees = []
+        self._deux_sessions()
+        self.p.relire_le_registre()
+        self.p._onglets.tabBar().moveTab(0, 1)
+        self.assertEqual(self.p.get_conf(self.CLE), [["S2", "/d 2"], ["S1", "/d1"]])
 
     def test_un_clear_change_la_conversation_memorisee(self):
         self.p._sessions_memorisees = []

@@ -202,6 +202,44 @@ class TestMosaique(Banc):
         self.assertFalse(f._mosaique._bouton_reduire.isVisible())
 
 
+class TestOrdre(Banc):
+    """« je souhaite pouvoir reorganiser les onglet par glissé / deposser et les fenetre en
+    vu mosaique également » (utilisateur, 19/10/2026). Les onglets se deplacaient deja
+    (`setMovable`), mais `_vues` ne suivait pas : l'ordre se perdait en mosaique, au
+    retour, et dans les sessions memorisees."""
+
+    def test_l_ordre_des_onglets_survit_a_la_mosaique(self):
+        f = self.fenetre()
+        a, b, c = f.ouvrir_session(), f.ouvrir_session(), f.ouvrir_session()
+        f._onglets.tabBar().moveTab(0, 2)
+        self.assertEqual(f.sessions(), [b, c, a])
+        f.basculer_mosaique(True)
+        self.assertEqual([cellule.vue for cellule in f._mosaique.cellules()], [b, c, a])
+        f.basculer_mosaique(False)
+        self.assertEqual([f._onglets.widget(i) for i in range(3)], [b, c, a])
+
+    def test_un_depot_en_mosaique_reordonne_et_revient_en_onglets(self):
+        f = self.fenetre()
+        a, b, c = f.ouvrir_session(), f.ouvrir_session(), f.ouvrir_session()
+        f.basculer_mosaique(True)
+        f._mosaique.sig_ordre_demande.emit([c, a, b])
+        self.assertTrue(f.en_mosaique())
+        self.assertEqual([cellule.vue for cellule in f._mosaique.cellules()], [c, a, b])
+        f.basculer_mosaique(False)
+        self.assertEqual([f._onglets.widget(i) for i in range(3)], [c, a, b])
+
+    def test_l_ordre_est_memorise(self):
+        f = self.fenetre()
+        f.demarrer()
+        a, b = f.sessions()[0], f.ouvrir_session()
+        self.statusline(os.getpid(), f.identifiant_de(a), "aaa", "/a")
+        self.statusline(os.getppid(), f.identifiant_de(b), "bbb", "/b")  # vivant, lui aussi
+        f.relire_le_registre()
+        f._onglets.tabBar().moveTab(1, 0)
+        self.assertEqual(json.loads(f._reglages.value("sessions_ouvertes")),
+                         [["bbb", "/b"], ["aaa", "/a"]])
+
+
 class TestReprise(Banc):
     """« pouvoir reprendre toutes les sessions où elles en sont après une fermeture /
     reouverture » (utilisateur, 11/10/2026)."""

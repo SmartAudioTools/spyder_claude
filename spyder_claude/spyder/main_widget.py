@@ -190,6 +190,7 @@ class PanneauClaude(PluginMainWidget):
         self._onglets = Tabs(self, rename_tabs=True, split_char="/", split_index=0)
         self._onglets.setDocumentMode(True)
         self._onglets.setMovable(True)
+        self._onglets.tabBar().tabMoved.connect(self._suivre_l_ordre_des_onglets)
         # set_close_function : l'API de Spyder, celle qu'utilise la console. Elle fait
         # setTabsClosable(True) et branche tabCloseRequested — un seul appel au lieu de
         # deux, et surtout le meme chemin que le panneau de reference.
@@ -251,6 +252,7 @@ class PanneauClaude(PluginMainWidget):
         self._mosaique.hide()
         self._disposition.addWidget(self._mosaique)
         self._mosaique.sig_reduire_demande.connect(self._quitter_la_mosaique)
+        self._mosaique.sig_ordre_demande.connect(self._reordonner)
 
         # LE BANDEAU DES DEUX JAUGES GLOBALES, TROISIEME ENFANT DE `_disposition` — ET NON
         # UN ENFANT DE L'UN OU L'AUTRE DES DEUX MODES. `_passer_en_mosaique` et
@@ -765,6 +767,22 @@ class PanneauClaude(PluginMainWidget):
 
     def _elements(self):
         return [(vue, self._titres.get(vue, "")) for vue in self._vues]
+
+    def _suivre_l_ordre_des_onglets(self, *_ignore):
+        """Un onglet tire a la souris (`setMovable`) : `_vues` prend l'ordre de la barre.
+        Sans cela, l'ordre se perdait au passage en mosaique, que `_vues` dispose, et a la
+        reprise, qui rouvre dans l'ordre memorise (« reorganiser les onglet par glisse /
+        deposser », utilisateur, 19/10/2026)."""
+        barre = [self._onglets.widget(i) for i in range(self._onglets.count())]
+        self._vues = [vue for vue in barre if vue in self._vues]
+        self._memoriser_les_sessions()
+
+    def _reordonner(self, vues):
+        """`Mosaique.sig_ordre_demande` : une cellule tiree sur une autre."""
+        self._vues = [vue for vue in vues if vue in self._vues]
+        self._mosaique.disposer(self._elements())
+        self._rafraichir_letat_affiche()
+        self._memoriser_les_sessions()
 
     def _ajuster_affichage(self):
         """Mosaique des que le panneau est agrandi, quel que soit le nombre de sessions.

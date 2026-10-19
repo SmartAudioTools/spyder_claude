@@ -17,6 +17,9 @@ import sys
 import unittest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+# qtermwidget est compile pour PySide6 : sous le binding par defaut du venv (PyQt5),
+# `QTermWidget(int, VueKonsole)` leve TypeError des setUpClass (constate le 19/10/2026).
+os.environ.setdefault("QT_API", "pyside6")
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from qtpy.QtWidgets import QApplication  # noqa: E402
