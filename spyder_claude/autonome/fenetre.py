@@ -57,6 +57,7 @@ from qtpy.QtWidgets import (QApplication, QGraphicsOpacityEffect, QHBoxLayout, Q
 
 from spyder_claude import etat_instances, usage
 from spyder_claude.compteurs import BandeauUsage
+from spyder_claude.defilement import BarreDefilementEmulee
 from spyder_claude.mosaique import MARGE_CONGE, Cellule, Mosaique
 from spyder_claude.spyder.onglet_compteur import CoinDOnglet
 from spyder_konsole import konsole_view
@@ -321,6 +322,11 @@ class FenetreClaude(QMainWindow):
     ICONES_VOCALES = {"parole": ("mdi.volume-high", "mdi.volume-off", "la synthèse vocale"),
                       "dictee": ("mdi.microphone", "mdi.microphone-off", "la dictée")}
 
+    def _vue_konsole(self, parent):
+        vue = konsole_view.VueKonsole(parent, **self._habillage)
+        BarreDefilementEmulee(vue)      # rendu plein ecran : defilement tenu par Claude
+        return vue
+
     def __init__(self, reglages=None, dossier=None, fabrique_vue=None, theme=None,
                  script_voix=None):
         """`reglages` : un QSettings (un fichier jetable dans les tests).
@@ -355,8 +361,7 @@ class FenetreClaude(QMainWindow):
             self._habillage.update(couleur_fond=palette.COLOR_BACKGROUND_1,
                                    couleur_texte=palette.COLOR_TEXT_1,
                                    couleur_fond_intense=palette.COLOR_BACKGROUND_2)
-        self._fabrique_vue = fabrique_vue or (
-            lambda parent: konsole_view.VueKonsole(parent, **self._habillage))
+        self._fabrique_vue = fabrique_vue or self._vue_konsole
         self._moteur = fabrique_vue is not None or konsole_view.DISPONIBLE
 
         self._vues = []

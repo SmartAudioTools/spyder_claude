@@ -80,6 +80,7 @@ from spyder_claude import etat_instances, usage
 from spyder_konsole import konsole_view
 from spyder_konsole.konsole_view import VueKonsole
 from spyder_claude.compteurs import BandeauUsage
+from spyder_claude.defilement import BarreDefilementEmulee
 from spyder_claude.mosaique import Mosaique
 from spyder_claude.spyder.onglet_compteur import CoinDOnglet
 from spyder_claude.spyder.translations import _
@@ -1162,6 +1163,7 @@ class PanneauClaude(PluginMainWidget):
             variables.update(environnement)
 
         vue = VueKonsole(self._onglets, **self._habillage_cache)
+        BarreDefilementEmulee(vue)      # rendu plein ecran : defilement tenu par Claude
         titre = _("Claude")
         if repertoire:
             titre = "%s : %s" % (_("Claude"),
