@@ -906,11 +906,37 @@ class TestGlisserDeposer(BaseMosaique):
         cellules = self.mosaique.cellules()
         self.glisser(cellules[0], cellules[2])
         self.assertIsNone(self.mosaique._fantome)
+        self.assertIsNone(self.mosaique._voile)
 
     def test_un_simple_clic_ne_fait_pas_de_cadre(self):
         cellules = self.mosaique.cellules()
         self.tirer(cellules[0], cellules[2], pas=1)
         self.assertIsNone(self.mosaique._fantome)
+        self.assertIsNone(self.mosaique._voile)
+
+    def test_un_voile_couvre_la_cellule_d_origine(self):
+        cellules = self.mosaique.cellules()
+        self.tirer(cellules[0], cellules[2])
+        voile = self.mosaique._voile
+        self.assertTrue(voile.isVisible())
+        self.assertEqual(voile.mapToGlobal(QPoint(0, 0)),
+                         cellules[0].mapToGlobal(QPoint(0, 0)))
+        self.assertEqual(voile.size(), cellules[0].size())
+
+    def test_le_fantome_est_transparent_hors_de_l_onglet(self):
+        """A droite de l'onglet, la cellule n'a rien : le fantome non plus (sinon un
+        rectangle opaque cache les arrondis de l'onglet)."""
+        cellules = self.mosaique.cellules()
+        self.tirer(cellules[0], cellules[2])
+        image = self.mosaique._fantome.pixmap().toImage()
+        self.assertEqual(image.pixelColor(image.width() - 5, 2).alpha(), 0)
+
+    def test_le_fantome_passe_au_dessus_du_voile(self):
+        cellules = self.mosaique.cellules()
+        self.tirer(cellules[0], cellules[2])
+        enfants = self.mosaique.children()
+        self.assertLess(enfants.index(self.mosaique._voile),
+                        enfants.index(self.mosaique._fantome))
 
 
 if __name__ == "__main__":

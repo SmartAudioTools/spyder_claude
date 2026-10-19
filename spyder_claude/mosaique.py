@@ -28,8 +28,8 @@ Aucun import Spyder : le module se deroule dans un test offscreen ordinaire.
 
 import math
 
-from qtpy.QtCore import QPoint, QPointF, QRectF, Qt, Signal
-from qtpy.QtGui import QColor, QPainter, QPainterPath, QPen
+from qtpy.QtCore import QPoint, QPointF, QRect, QRectF, Qt, Signal
+from qtpy.QtGui import QColor, QPainter, QPainterPath, QPen, QPixmap, QRegion
 from qtpy.QtWidgets import (QApplication, QFrame, QGraphicsOpacityEffect, QHBoxLayout,
                             QLabel, QSizePolicy, QSpacerItem, QSplitter, QStyle, QToolButton, QVBoxLayout, QWidget)
 
@@ -661,6 +661,8 @@ class Mosaique(QWidget):
         #: son coin et le point saisi. None hors glisser.
         self._fantome = None
         self._prise = None
+        #: Voile pose sur la cellule d'origine pendant le glisser (cf. `_suivre`).
+        self._voile = None
         disposition_verticale = QVBoxLayout(self)
         disposition_verticale.setContentsMargins(0, 0, 0, 0)
         disposition_verticale.setSpacing(0)
@@ -990,9 +992,11 @@ class Mosaique(QWidget):
     def cellules(self):
         return list(self._cellules)
 
-    #: Opacite de l'image qui suit la souris : assez pour reconnaitre la session, assez
-    #: peu pour voir la cellule visee dessous.
-    OPACITE_FANTOME = 0.6
+    #: Opacite de l'image qui suit la souris. 0.6 au premier essai : « il faut plus
+    #: d'opacite » (utilisateur, 19/10/2026, apres essai dans Spyder).
+    OPACITE_FANTOME = 0.85
+    #: Opacite du voile couleur de fond pose sur la cellule d'origine (0 a 255).
+    OPACITE_VOILE = 170
 
     def _suivre(self, cellule, depart, point):
         """Le cadre de `cellule` suit la souris pendant qu'on tire son onglet.
@@ -1004,10 +1008,35 @@ class Mosaique(QWidget):
         refait toutes les cellules (`disposer`) et reparente les terminaux — un
         scintillement et un cout par pixel parcouru, pour un ordre qui n'est pas encore
         decide.
+
+        Pendant le glisser, la cellule d'origine est couverte d'un voile de la couleur de
+        fond : « mettre de la transparence sur l'onglet d'origine (ou mettre un voile
+        transparent avec la couleur de fond) » (utilisateur, 19/10/2026). Ecarte : un
+        `QGraphicsOpacityEffect` sur la cellule elle-meme, qui ferait peindre le terminal
+        par l'effet tant qu'il dure, et dont il faudrait de plus defaire l'etat si le
+        glisser s'acheve sans deplacement.
         """
         if self._fantome is None:
+            # Le voile AVANT le fantome : le dernier enfant cree est peint au-dessus.
+            self._voile = QLabel(self)
+            fond = QColor(cellule._fond_vue)
+            if cellule._fond_vue == "transparent" or not fond.isValid():
+                fond = self.palette().color(self.backgroundRole())
+            self._voile.setStyleSheet("background-color: rgba(%d, %d, %d, %d);"
+                                      % (fond.red(), fond.green(), fond.blue(),
+                                         self.OPACITE_VOILE))
+            self._voile.setGeometry(QRect(cellule.mapTo(self, QPoint(0, 0)), cellule.size()))
+            self._voile.show()
             self._fantome = QLabel(self)
-            self._fantome.setPixmap(cellule.grab())
+            # Pas `grab()` : il peint d'abord le fond de la fenetre, et les coins arrondis
+            # de l'onglet comme la bande a sa droite devenaient un rectangle opaque.
+            # Rendu des seuls enfants sur une image transparente.
+            ratio = cellule.devicePixelRatioF()
+            image = QPixmap(cellule.size() * ratio)
+            image.setDevicePixelRatio(ratio)
+            image.fill(Qt.transparent)
+            cellule.render(image, QPoint(), QRegion(), QWidget.DrawChildren)
+            self._fantome.setPixmap(image)
             self._fantome.resize(cellule.size())
             effet = QGraphicsOpacityEffect(self._fantome)
             effet.setOpacity(self.OPACITE_FANTOME)
@@ -1023,6 +1052,10 @@ class Mosaique(QWidget):
             self._fantome.hide()
             self._fantome.deleteLater()
             self._fantome = None
+        if self._voile is not None:
+            self._voile.hide()
+            self._voile.deleteLater()
+            self._voile = None
 
     def _deplacer(self, vue, point):
         """`vue` lachee au point global `point` : elle prend la place de la cellule
