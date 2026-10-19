@@ -11,6 +11,7 @@ Lancement :
     QT_QPA_PLATFORM=offscreen <python du venv Spyder> tests/test_compteurs.py
 """
 
+import collections
 import os
 import sys
 import time
@@ -19,6 +20,7 @@ import unittest
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from qtpy.QtGui import QColor  # noqa: E402
 from qtpy.QtWidgets import QApplication  # noqa: E402
 
 from spyder_claude import compteurs  # noqa: E402
@@ -178,13 +180,19 @@ class TestCouleurParAllure(unittest.TestCase):
         self.assertEqual((couleur.red(), couleur.green(), couleur.blue()), (255, 152, 0))
 
     def _couleur_a(self, bande, x):
+        """La couleur DOMINANTE autour de `x`, sur toute la hauteur du remplissage.
+
+        ⚠ PAS UN PIXEL SEUL : le texte, centre sur la jauge, porte l'heure de fin de la
+        fenetre, et sa largeur change avec l'heure a laquelle le test tourne. Un pixel
+        fixe (20, 4) tombait le 19/10/2026 a 11 h 30 sur un trait de lettre blanc, alors
+        que le meme test passait plus tot. Les lettres sont minces et antialiasees : sur
+        une zone, la couleur du remplissage reste la plus frequente.
+        """
         image = bande.grab().toImage()
-        # PRES DU HAUT, pas au milieu : le texte est centre verticalement sur la jauge
-        # (AlignCenter dans tout le rectangle) et un echantillon au milieu de la hauteur
-        # tombe parfois sur un trait de lettre (blanc), pas sur le remplissage — mesure en
-        # direct. y=4 reste au-dessus du texte, sous le contour et les coins arrondis, et
-        # au-dessus de la zone des graduations (limitee au dernier quart depuis le bas).
-        return image.pixelColor(x, 4)
+        comptes = collections.Counter(
+            image.pixel(colonne, ligne)
+            for colonne in range(x - 6, x + 7) for ligne in range(2, image.height() - 2))
+        return QColor(comptes.most_common(1)[0][0])
 
     def test_bien_en_avance_sur_lallure_est_rouge(self):
         # 90 % consomme, fenetre de 5 h a peine entamee (10 min sur 300) : tres en avance.
