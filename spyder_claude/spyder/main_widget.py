@@ -1309,15 +1309,40 @@ class PanneauClaude(PluginMainWidget):
         calme = QTimer(self)
         calme.setSingleShot(True)
         calme.setInterval(self.DELAI_CALME)
-        calme.timeout.connect(lambda v=vue: self._lever_voile(v))
+        calme.timeout.connect(lambda v=vue: self._fin_du_calme(v))
         self._calmes[vue] = calme
-        QTimer.singleShot(self.PLAFOND_VOILE, lambda v=vue: self._lever_voile(v))
+        QTimer.singleShot(self.PLAFOND_VOILE, lambda v=vue, c=calme: self._lever_si_meme(v, c))
 
     def _relancer_calme(self, vue):
         """Une sortie : si le minuteur est arme (titre de Claude recu), il repart."""
         calme = self._calmes.get(vue)
         if calme is not None and calme.isActive():
             calme.start()
+
+    def _lever_si_meme(self, vue, calme):
+        """Le plafond d'un voile, pas celui d'un voile precedent deja leve (selecteur puis
+        session choisie avant 10 s : la mesure se serait vue)."""
+        if self._calmes.get(vue) is calme:
+            self._lever_voile(vue)
+
+    def _fin_du_calme(self, vue):
+        """Claude a fini de dessiner : la barre mesure l'etendue, ENCORE voilee, puis le voile
+        tombe (cf. BarreDefilementEmulee.mesurer). Jamais dans le selecteur : ses PgUp y
+        deplaceraient la selection."""
+        barre = vue.findChild(BarreDefilementEmulee)
+        if barre is None or vue in self._bandeaux:
+            self._lever_voile(vue)
+            return
+        # plafond neuf, compte d'ici : celui de _voiler, chargement de Claude compris,
+        # tomberait en pleine mesure. Le jeton, jamais demarre,
+        # n'est pas relance par la sortie de la mesure.
+        ancien = self._calmes.pop(vue, None)
+        if ancien is not None:
+            ancien.stop()
+            ancien.deleteLater()
+        self._calmes[vue] = jeton = QTimer(self)
+        QTimer.singleShot(self.PLAFOND_VOILE, lambda v=vue, c=jeton: self._lever_si_meme(v, c))
+        barre.mesurer(lambda v=vue: self._lever_voile(v))
 
     def _lever_voile(self, vue):
         calme = self._calmes.pop(vue, None)
@@ -1349,6 +1374,9 @@ class PanneauClaude(PluginMainWidget):
         if calme is not None:
             calme.start()
         if texte != self.TITRE_SELECTEUR:
+            if vue in self._bandeaux and vue not in self._calmes:
+                self._voiler(vue)       # session choisie dans le selecteur : sa mesure, voilee
+                self._calmes[vue].start()
             self._retirer_bandeau(vue)
 
     def _retirer_bandeau(self, vue):

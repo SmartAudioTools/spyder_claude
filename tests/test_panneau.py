@@ -56,6 +56,7 @@ from qtpy.QtWidgets import QApplication, QTabBar, QVBoxLayout, QWidget  # noqa: 
 APP = QApplication.instance() or QApplication([])
 
 from spyder_claude import etat_instances, usage  # noqa: E402
+from spyder_claude.defilement import BarreDefilementEmulee  # noqa: E402
 from spyder_claude.spyder.main_widget import PanneauClaude  # noqa: E402
 from spyder_claude.spyder.onglet_compteur import CoinDOnglet  # noqa: E402
 
@@ -559,6 +560,42 @@ class TestBandeauNouvelleSession(unittest.TestCase):
             time.sleep(0.01)
         self.assertIsNone(self.p._ecran(vue).graphicsEffect())
         self.assertNotIn(vue, self.p._calmes)
+
+    def test_la_barre_mesure_sous_le_voile(self):
+        """« barres rayees a l'ouverture d'anciennes sessions » (19/10/2026) : le calme venu,
+        la barre mesure, voile maintenu, et le voile tombe a la fin de la mesure. Dans le
+        selecteur, rien (ses PgUp deplaceraient la selection) ; une session choisie
+        revoile, et le plafond du premier voile ne leve pas le second ; celui du second ne
+        tombe pas en pleine mesure (il repart a la fin du calme)."""
+        vue = self._session()
+        rappels = []
+
+        class Barre(BarreDefilementEmulee):
+            def __init__(self, parent):
+                QWidget.__init__(self, parent)
+
+            def mesurer(self, fini):
+                rappels.append(fini)
+        Barre(vue)
+        vue.pids = (42, 77)
+        self.p._poser_bandeau(vue)
+        self.p._lancer(vue, "claude -r")
+        premier = self.p._calmes[vue]
+        self.p._titre_change(vue, self.p.TITRE_SELECTEUR)
+        self.p._fin_du_calme(vue)
+        self.assertEqual(rappels, [])                       # selecteur : pas de mesure
+        self.assertIsNone(self.p._ecran(vue).graphicsEffect())
+        self.p._titre_change(vue, "\u2733 Claude Code")     # session choisie
+        self.assertIsNotNone(self.p._ecran(vue).graphicsEffect())
+        self.p._lever_si_meme(vue, premier)                 # plafond du premier voile
+        self.assertIsNotNone(self.p._ecran(vue).graphicsEffect())
+        second = self.p._calmes[vue]
+        self.p._fin_du_calme(vue)
+        self.assertEqual(len(rappels), 1)
+        self.p._lever_si_meme(vue, second)                  # plafond compte depuis _voiler :
+        self.assertIsNotNone(self.p._ecran(vue).graphicsEffect())   # la mesure reste voilee
+        rappels[0]()
+        self.assertIsNone(self.p._ecran(vue).graphicsEffect())
 
     def test_un_titre_du_shell_garde_le_bouton(self):
         """Un titre pose alors que le shell est au premier plan (avant le selecteur,

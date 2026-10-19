@@ -203,6 +203,38 @@ class TestBarre(unittest.TestCase):
             attendre(barre)
             self.assertEqual((barre.modele.d, claude.p), (cible, cible))
 
+    def mesurer(self, barre, plafond=15):
+        fini = []
+        barre.mesurer(lambda: fini.append(time.monotonic()))
+        limite = time.monotonic() + plafond
+        while not fini and time.monotonic() < limite:
+            QCoreApplication.processEvents()
+            time.sleep(0.01)
+        return fini
+
+    def test_mesurer_trouve_le_haut_puis_revient_en_bas(self):
+        """« barres rayees a l'ouverture d'anciennes sessions » (19/10/2026) : une mesure
+        sous le voile, qui rend l'etendue exacte et laisse la vue en bas."""
+        claude, barre = self.monter(60)
+        barre.mesurer(lambda: None)                 # relectures resserrees le temps de la mesure
+        self.assertEqual(barre._calme.interval(), barre.CALME_MESURE)
+        barre.modele.haut_connu, barre._mesure = False, None
+        barre._sonde.stop()
+        self.assertTrue(self.mesurer(barre))
+        self.assertEqual(barre._calme.interval(), barre.CALME)
+        self.assertEqual((barre.modele.haut_connu, barre.modele.T), (True, claude.haut))
+        self.assertEqual((barre.modele.d, claude.p), (0, 0))
+        self.assertTrue(self.mesurer(barre))        # deja connu : rendu aussitot, rien d'envoye
+
+    def test_mesurer_au_plafond_revient_en_bas_et_reste_hachure(self):
+        """Une session trop longue pour MESURE : jamais une etendue fausse avec l'air exacte
+        (Superviseur, 19/10/2026), et Ctrl+End part quand meme."""
+        claude, barre = self.monter(3000)
+        barre.MESURE = 400
+        self.assertTrue(self.mesurer(barre))
+        self.assertFalse(barre.modele.haut_connu)
+        self.assertEqual((barre.modele.d, claude.p), (0, 0))
+
     def test_la_molette_va_plus_vite_quand_on_la_tourne_vite(self):
         """« le scroll ligne a ligne est beaucoup trop lent », mais « on ne pourra plus avancer
         ligne a ligne ? » (19/10/2026) : un cran isole vaut une ligne, les suivants d'une

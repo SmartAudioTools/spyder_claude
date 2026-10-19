@@ -188,6 +188,11 @@ class BarreDefilementEmulee(QWidget):
     #: lignes du systeme (3) : c'est la vitesse de l'utilisateur qui choisit, jamais un envoi
     #: plus serre (Claude accelererait selon la charge ; avis du Superviseur, 19/10/2026).
     ISOLE = 150
+    #: Plafond de `mesurer`, en ms : sous le voile de lancement (PLAFOND_VOILE, 10 s).
+    MESURE = 8000
+    #: CALME pendant `mesurer` : sonde du 19/10/2026, 576 lignes trouvees exactement de 120 a
+    #: 25 ms (128 a 410 lignes/s) ; 40 garde une marge pour une machine chargee.
+    CALME_MESURE = 40
 
     def __init__(self, vue):
         super().__init__(vue)
@@ -202,6 +207,7 @@ class BarreDefilementEmulee(QWidget):
         self._derniere_molette = 0.0    # instant du dernier evenement de molette, cf. ISOLE
         self._actif = False             # Claude defile-t-il lui-meme ? cf. _sur_mode
         self._ecran = None              # (ecran, d) de reference du suivi, cf. _suivre
+        self._mesure = None             # (rappel, echeance) de `mesurer` en cours
         self.setFixedWidth(self.LARGEUR)
         self.setCursor(Qt.ArrowCursor)
         self.hide()
@@ -217,6 +223,8 @@ class BarreDefilementEmulee(QWidget):
         # Nos envois font glisser l'ecran eux aussi : on ne relit qu'une fois Claude repeint.
         self._occupe = QTimer(self, singleShot=True, interval=self.CALME)
         self._occupe.timeout.connect(self._suivre)
+        self._sonde = QTimer(self, interval=self.CALME)
+        self._sonde.timeout.connect(self._suivre_mesure)
         vue.sig_sortie.connect(self._sur_sortie)
         vue.sig_defilement_au_programme.connect(self._sur_mode)
         vue.ajouter_a_droite(self)
@@ -311,6 +319,38 @@ class BarreDefilementEmulee(QWidget):
         if self.modele.haut_connu:
             self._cible = min(self._cible, self.modele.T)
         self._avancer()
+
+    def mesurer(self, fini):
+        """Une fois, sous le voile de lancement : jusqu'en haut (T exact), retour en bas, `fini()`.
+
+        « j'ai toujours des barres rayees a l'ouverture d'anciennes sessions » ; l'aller-retour
+        apres chaque reponse est refuse (« 1 a 2 s c'est beaucoup trop long »), cache sous le
+        voile il ne coute rien. Au plafond MESURE, retour en bas quand meme : T reste un
+        minorant, haut_connu faux, et la barre hachuree le dit (jamais une etendue inventee).
+        """
+        if not self._actif or self.modele.haut_connu:
+            fini()
+            return
+        self._mesure = (fini, time.monotonic() + self.MESURE / 1000)
+        self._cadencer(self.CALME_MESURE)
+        self._sonde.start()
+        self.aller_a(10 ** 6)
+
+    def _suivre_mesure(self):
+        fini, echeance = self._mesure
+        arrive = (self._cible == self.modele.d and self._verification is None
+                  and self._paquet is None)
+        if not arrive and time.monotonic() < echeance:
+            return
+        self._sonde.stop()
+        self._mesure = None
+        self._cadencer(self.CALME)
+        self.aller_a(0)                 # Ctrl+End, meme si une page attend sa relecture
+        QTimer.singleShot(self.CALME, fini)     # le temps que Claude repeigne le bas
+
+    def _cadencer(self, calme):
+        for minuteur in (self._calme, self._occupe, self._sonde):
+            minuteur.setInterval(calme)
 
     def _envoyer(self, texte):
         self._occupe.start()
