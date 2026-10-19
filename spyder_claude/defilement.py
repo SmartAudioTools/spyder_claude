@@ -46,11 +46,12 @@ ce glissement entre deux ecrans ; la somme fait grandir T sans perdre le haut co
 plein, saute d'un coup au-dela de tout contenu commun - AMBIGU, et le pouce se rehachure.
 """
 
+import time
 from collections import Counter
 
 from qtpy.QtCore import QEvent, QRectF, Qt, QTimer
 from qtpy.QtGui import QBrush, QColor, QPainter
-from qtpy.QtWidgets import QWidget
+from qtpy.QtWidgets import QApplication, QWidget
 
 #: Ctrl+End, « Jump to bottom » de Claude Code.
 CTRL_FIN = "\x1b[1;5F"
@@ -183,6 +184,10 @@ class BarreDefilementEmulee(QWidget):
     PLAFOND = 800
     #: Pendant la sortie, l'ecran est relu au plus toutes les SUIVI ms (0,1 ms la lecture).
     SUIVI = 40
+    #: Un cran de molette a plus de ISOLE ms du precedent vaut une ligne ; plus pres, les
+    #: lignes du systeme (3) : c'est la vitesse de l'utilisateur qui choisit, jamais un envoi
+    #: plus serre (Claude accelererait selon la charge ; avis du Superviseur, 19/10/2026).
+    ISOLE = 150
 
     def __init__(self, vue):
         super().__init__(vue)
@@ -194,6 +199,7 @@ class BarreDefilementEmulee(QWidget):
         self._paquet = None             # (d avant, ecran avant, crans restants) en cours
         self._glisse = None             # (y de depart, d de depart) pendant un glisser
         self._reste_molette = 0         # huitiemes de degre pas encore convertis en crans
+        self._derniere_molette = 0.0    # instant du dernier evenement de molette, cf. ISOLE
         self._actif = False             # Claude defile-t-il lui-meme ? cf. _sur_mode
         self._ecran = None              # (ecran, d) de reference du suivi, cf. _suivre
         self.setFixedWidth(self.LARGEUR)
@@ -469,5 +475,8 @@ class BarreDefilementEmulee(QWidget):
         self._reste_molette += evenement.angleDelta().y()
         crans = int(self._reste_molette / 120)
         self._reste_molette -= crans * 120
-        if crans:
-            self.aller_a(self._cible + crans)
+        maintenant = time.monotonic()
+        rapide = maintenant - self._derniere_molette < self.ISOLE / 1000
+        self._derniere_molette = maintenant
+        if crans:   # « ligne a ligne beaucoup trop lent », sans perdre le ligne a ligne
+            self.aller_a(self._cible + crans * (QApplication.wheelScrollLines() if rapide else 1))

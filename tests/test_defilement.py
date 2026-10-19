@@ -23,7 +23,8 @@ import unittest
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from qtpy.QtCore import QCoreApplication, Signal  # noqa: E402
+from qtpy.QtCore import QCoreApplication, QPoint, QPointF, Qt, Signal  # noqa: E402
+from qtpy.QtGui import QWheelEvent  # noqa: E402
 from qtpy.QtWidgets import QApplication, QHBoxLayout, QWidget  # noqa: E402
 
 from spyder_claude.defilement import (CTRL_FIN, PAGE_BAS, PAGE_HAUT,  # noqa: E402
@@ -201,6 +202,23 @@ class TestBarre(unittest.TestCase):
             barre.aller_a(cible)
             attendre(barre)
             self.assertEqual((barre.modele.d, claude.p), (cible, cible))
+
+    def test_la_molette_va_plus_vite_quand_on_la_tourne_vite(self):
+        """« le scroll ligne a ligne est beaucoup trop lent », mais « on ne pourra plus avancer
+        ligne a ligne ? » (19/10/2026) : un cran isole vaut une ligne, les suivants d'une
+        rafale QApplication.wheelScrollLines() (3 par defaut)."""
+        claude, barre = self.monter()
+        cran = QWheelEvent(QPointF(1, 1), QPointF(1, 1), QPoint(0, 0), QPoint(0, 120),
+                           Qt.NoButton, Qt.NoModifier, Qt.NoScrollPhase, False)
+        barre.wheelEvent(cran)
+        attendre(barre)
+        self.assertEqual((barre.modele.d, claude.p), (1, 1))
+        time.sleep(barre.ISOLE / 1000 + 0.05)
+        barre.wheelEvent(cran)          # de nouveau isole
+        barre.wheelEvent(cran)          # aussitot : rafale
+        attendre(barre)
+        attendu = 2 + QApplication.wheelScrollLines()
+        self.assertEqual((barre.modele.d, claude.p), (attendu, attendu))
 
     def test_un_jet_de_crans_accelere(self):
         """Le faux Claude doit voir le defaut que l'espacement corrige, sinon il ne prouve rien."""
