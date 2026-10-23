@@ -556,7 +556,8 @@ class FenetreClaude(QMainWindow):
 
     def ouvrir_session(self, dossier=None, conversation=None, nouvelle=False, options="",
                        nom=None):
-        """main_widget.ouvrir_terminal. `conversation` reprend ce session_id par `-r` ;
+        """main_widget.ouvrir_terminal. `conversation` reprend ce session_id par `-r`,
+        `options` apres lui (le premier message d'une reprise : cf. `demande_de_session`) ;
         `nouvelle` lance `claude` sans selecteur (« Nouveau Claude » de Dolphin), avec
         `options` en plus (modele, nom, premier message : cf. `demande_de_session`) ;
         `nom` ne fait que titrer l'onglet."""
@@ -590,7 +591,8 @@ class FenetreClaude(QMainWindow):
         vue.demarrer(commande=None, repertoire=dossier, environnement=variables)
         if conversation:
             self._conversations[vue] = (conversation, dossier)
-            self._lancer(vue, self._commande_nouvelle_session("-r " + conversation))
+            self._lancer(vue, self._commande_nouvelle_session(
+                " ".join(["-r", conversation] + ([options] if options else []))))
         elif nouvelle:
             self._lancer(vue, self._commande_nouvelle_session(options))
         else:
@@ -660,6 +662,12 @@ class FenetreClaude(QMainWindow):
         `fermer<TAB>session_id` : la croix de l'onglet qui tient cette conversation - un
         worker qui a rendu ; refus si aucun onglet de ce dock ne la tient (pas encore vue
         par claude-statusline, ou ouverte ailleurs).
+        `reprendre<TAB>dossier<TAB>session_id<TAB>nom<TAB>message` : un onglet qui rouvre
+        cette conversation par `claude -r <session_id> [message]` - un worker ferme par
+        `fermer` et a relancer (utilisateur, 24/10/2026 : « permettre une reprise par le
+        superviseur d'une session »). L'identifiant complet et non le nom : `claude -r <nom>`
+        est ambigu des qu'un nom a servi deux fois. `nom` ne fait que titrer l'onglet ; refus
+        si un onglet de ce dock tient deja cette conversation. Comme `lancer`, sans se montrer.
         """
         champs = ligne.rstrip("\n").split("\t")
         mode = champs[0]
@@ -679,6 +687,18 @@ class FenetreClaude(QMainWindow):
                                    nom=nom) is None:
                 return "refus le dock ne peut pas ouvrir de session"
             return "ok %s" % nom
+        if mode == "reprendre":
+            dossier, session, nom, message = (champs[1:] + ["", "", "", ""])[:4]
+            if not os.path.isdir(dossier):
+                return "refus dossier introuvable : %s" % dossier
+            if not session.strip():
+                return "refus session_id vide"
+            if any(c == session for c, _d in self._conversations.values()):
+                return "refus la session %s est deja ouverte dans ce dock" % session
+            if self.ouvrir_session(dossier, conversation=session, nom=nom or None,
+                                   options=shlex.quote(message) if message else "") is None:
+                return "refus le dock ne peut pas ouvrir de session"
+            return "ok %s" % session
         if mode == "fermer":
             session = champs[1] if len(champs) > 1 else ""
             for vue, (conversation, _dossier) in list(self._conversations.items()):

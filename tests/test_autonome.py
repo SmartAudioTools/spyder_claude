@@ -747,6 +747,39 @@ class TestDemandesDesSessions(Banc):
         self.assertTrue(etat_instances.reponse_du_dock("d1").startswith("refus aucun onglet"))
         self.assertIsNone(etat_instances.reponse_du_dock("d1"))   # consommee
 
+    def test_reprendre_rouvre_la_conversation_par_son_identifiant_avec_son_message(self):
+        f = self.fenetre_prete()
+        depot = self.depot()
+        etat_instances.deposer_demande_au_dock(
+            "d1", "reprendre\t%s\tsess-w14\tWorker 14 SmartOS\tcontinue ton brief\n" % depot)
+        etat_instances.deposer_demande_au_dock("d2", "reprendre\t%s\tsess-w18\t\t\n" % depot)
+        f.relire_le_registre()
+        self.assertEqual(etat_instances.reponse_du_dock("d1"), "ok sess-w14")
+        self.assertEqual(etat_instances.reponse_du_dock("d2"), "ok sess-w18")
+        un, deux = f.sessions()[-2:]
+        self.assertEqual(un.demarrages[0][1], depot)
+        self.assertEqual(un.envois, ["clear; claude -r sess-w14 'continue ton brief'\n"])
+        self.assertEqual(deux.envois, ["clear; claude -r sess-w18\n"])
+        self.assertEqual(f._titres[un], "Worker 14 SmartOS : SmartOS")
+        self.assertEqual(f._conversations[un], ("sess-w14", depot))   # fermable par `fermer`
+        self.assertEqual(f.montrees, [])
+
+    def test_reprendre_refuse_dossier_absent_identifiant_vide_ou_deja_ouverte(self):
+        f = self.fenetre_prete()
+        depot = self.depot()
+        etat_instances.deposer_demande_au_dock("d0", "reprendre\t%s\tsess-w20\tW\t\n" % depot)
+        f.relire_le_registre()
+        avant = len(f.sessions())
+        etat_instances.deposer_demande_au_dock(
+            "d1", "reprendre\t%s\tsess-x\tW\t\n" % os.path.join(self.temporaire, "absent"))
+        etat_instances.deposer_demande_au_dock("d2", "reprendre\t%s\t \tW\t\n" % depot)
+        etat_instances.deposer_demande_au_dock("d3", "reprendre\t%s\tsess-w20\tW\t\n" % depot)
+        f.relire_le_registre()
+        self.assertTrue(etat_instances.reponse_du_dock("d1").startswith("refus dossier"))
+        self.assertEqual(etat_instances.reponse_du_dock("d2"), "refus session_id vide")
+        self.assertTrue(etat_instances.reponse_du_dock("d3").endswith("deja ouverte dans ce dock"))
+        self.assertEqual(len(f.sessions()), avant)
+
 
 if __name__ == "__main__":
     unittest.main()
