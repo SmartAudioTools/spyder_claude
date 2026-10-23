@@ -1266,7 +1266,7 @@ class FenetreClaude(QMainWindow):
             set(self._identifiants.values()) | self._identifiants_fermes)
         for vue, identifiant in list(self._identifiants.items()):
             if identifiant in dictees:
-                self._taper_la_dictee(vue, dictees.pop(identifiant))
+                self._taper_la_dictee(vue, *dictees.pop(identifiant))
         for identifiant in dictees:
             etat_instances.tracer_dictee(
                 "dock autonome : onglet %s ferme avant l'arrivee de la dictee - rien tape"
@@ -1437,10 +1437,12 @@ class FenetreClaude(QMainWindow):
             return True
         return False
 
-    def _taper_la_dictee(self, vue, texte):
+    def _taper_la_dictee(self, vue, texte, valider=True):
         """Texte, puis un CR SEUL 300 ms plus tard (cf. main_widget._taper_la_dictee)."""
-        vue.envoyer(texte)
-        self._differer(vue, self.PAUSE_VALIDATION_DICTEE, lambda: vue.envoyer("\r"))
+        if texte:
+            vue.envoyer(texte)
+        if valider:
+            self._differer(vue, self.PAUSE_VALIDATION_DICTEE, lambda: vue.envoyer("\r"))
 
     # ------------------------------------------------------------------ teinte
 

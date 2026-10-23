@@ -1666,7 +1666,7 @@ class PanneauClaude(PluginMainWidget):
             set(self._identifiants.values()) | self._identifiants_fermes)
         for vue, identifiant in list(self._identifiants.items()):
             if identifiant in dictees:
-                self._taper_la_dictee(vue, dictees.pop(identifiant))
+                self._taper_la_dictee(vue, *dictees.pop(identifiant))
         for identifiant in dictees:   # ce qui reste visait un onglet ferme
             etat_instances.tracer_dictee(
                 "panneau : onglet %s ferme avant l'arrivee de la dictee - rien tape"
@@ -1912,8 +1912,11 @@ class PanneauClaude(PluginMainWidget):
     #: (0,3 s) pour une fenetre Konsole, et pour la meme raison.
     PAUSE_VALIDATION_DICTEE = 300
 
-    def _taper_la_dictee(self, vue, texte):
-        """Tape une dictee transcrite dans l'onglet, puis la valide.
+    def _taper_la_dictee(self, vue, texte, valider=True):
+        """Tape une dictee transcrite dans l'onglet, puis la valide si `valider`.
+
+        En flux (23/10/2026), les morceaux arrivent sans validation pendant que
+        l'utilisateur parle, et la validation seule, a texte vide, au blanc final.
 
         Le compte isole n'a pas de D-Bus : claude-dictee.sh depose le texte sous
         l'identifiant de l'onglet (cf. etat_instances.dictees_a_taper) et c'est ici
@@ -1929,5 +1932,7 @@ class PanneauClaude(PluginMainWidget):
         Le minuteur est enfant de la vue (`_differer`) : un onglet ferme pendant la
         pause emporte sa validation avec lui.
         """
-        vue.envoyer(texte)
-        self._differer(vue, self.PAUSE_VALIDATION_DICTEE, lambda: vue.envoyer("\r"))
+        if texte:
+            vue.envoyer(texte)
+        if valider:
+            self._differer(vue, self.PAUSE_VALIDATION_DICTEE, lambda: vue.envoyer("\r"))

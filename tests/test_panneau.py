@@ -750,6 +750,26 @@ class TestRegistreDetat(FauxRegistre):
         # Un identifiant qui n'est pas a nous reste en place pour son panneau.
         self.assertTrue(os.path.exists(os.path.join(self.dossier, "dictee-pane-zzz")))
 
+    def test_une_dictee_en_flux_tape_ses_morceaux_dans_l_ordre_puis_valide(self):
+        """Dictee en flux (23/10/2026) : les morceaux arrivent pendant qu'on parle, tapes
+        sans validation et dans l'ordre des numeros ; la validation arrive seule, a la fin."""
+        vue = self._session("aaa")
+        etat_instances.deposer_dictee("aaa", " monde", self.dossier, "@0002")
+        etat_instances.deposer_dictee("aaa", "bonjour", self.dossier, "@0001")
+        self.p.relire_le_registre()
+        fin = time.monotonic() + 1
+        while time.monotonic() < fin:
+            APP.processEvents()
+        self.assertEqual(vue.envois, ["bonjour monde"])   # pas de CR : on parle encore
+        etat_instances.deposer_dictee("aaa", " !", self.dossier, "@0003")
+        etat_instances.deposer_dictee("aaa", "", self.dossier, "@0004.valider")
+        self.p.relire_le_registre()
+        fin = time.monotonic() + 3
+        while len(vue.envois) < 3 and time.monotonic() < fin:
+            APP.processEvents()
+        self.assertEqual(vue.envois, ["bonjour monde", " !", "\r"])
+        self.assertEqual([n for n in os.listdir(self.dossier) if n.startswith("dictee-")], [])
+
     def test_une_dictee_pour_un_onglet_ferme_est_jetee_et_tracee(self):
         """Micro ouvert, onglet ferme avant la fin de la transcription : la dictee est a
         nous, elle ne reste pas dans le registre, et dictee.log dit qu'elle est perdue."""

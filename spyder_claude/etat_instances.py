@@ -193,39 +193,52 @@ def deposer_demande_de_focus(identifiant, dossier=None):
     os.replace(provisoire, os.path.join(dossier, FICHIER_FOCUS))
 
 
-#: Prefixe des dictees deposees pour un onglet du panneau : `dictee-pane-<identifiant>`,
-#: le texte transcrit dans le fichier. Ecrit par claude-dictee.sh (compte isole) quand la
-#: session porte SPYDER_CLAUDE_PANE — hors du motif `injecter-*` de claude_injection.sh,
-#: qui ne sait atteindre que des onglets Konsole et supprimait la dictee faute d'en trouver.
+#: Prefixe des dictees deposees pour un onglet du panneau, ecrites par claude-dictee.sh
+#: (compte isole) quand la session porte SPYDER_CLAUDE_PANE — hors du motif `injecter-*` de
+#: claude_injection.sh, qui ne sait atteindre que des onglets Konsole et supprimait la dictee
+#: faute d'en trouver. Deux formes :
+#:   `dictee-pane-<identifiant>`                : texte a taper PUIS valider (forme d'origine) ;
+#:   `dictee-pane-<identifiant>@<NNNN>[.valider]` : depuis la dictee en flux (23/10/2026), un
+#:     morceau tape SANS valider, ou (vide, `.valider`) la seule validation ; le numero fixe
+#:     l'ordre, les morceaux arrivant pendant que l'utilisateur parle encore.
 PREFIXE_DICTEE = "dictee-pane-"
+SUFFIXE_VALIDER = ".valider"
 
 
 def dictees_a_taper(identifiants, dossier=None):
-    """{identifiant: texte} des dictees deposees pour CES onglets, consommees au passage.
+    """{identifiant: (texte, valider)} des dictees deposees pour CES onglets, consommees.
 
-    Seulement les notres : un fichier d'un identifiant inconnu appartient a un autre
-    panneau (une seconde instance de Spyder) et reste en place pour lui. Une dictee se
-    consomme comme une demande de focus — relue, elle serait retapee a chaque battement.
+    `texte` met bout a bout, dans l'ordre des numeros, ce qui est arrive depuis le
+    battement precedent ; `valider` dit si une validation suit. Seulement les notres : un
+    fichier d'un identifiant inconnu appartient a un autre panneau (une seconde instance de
+    Spyder) et reste en place pour lui. Une dictee se consomme comme une demande de focus —
+    relue, elle serait retapee a chaque battement.
     """
     dossier = dossier or dossier_etat()
     voulus = set(identifiants)
-    dictees = {}
+    depots = {}
     try:
         noms = os.listdir(dossier)
     except OSError:
-        return dictees
+        return {}
     for nom in noms:
-        identifiant = nom[len(PREFIXE_DICTEE):]
-        if not nom.startswith(PREFIXE_DICTEE) or identifiant not in voulus:
+        if not nom.startswith(PREFIXE_DICTEE):
             continue
+        identifiant, arobase, numero = nom[len(PREFIXE_DICTEE):].partition("@")
+        if identifiant not in voulus:
+            continue
+        valider = not arobase or numero.endswith(SUFFIXE_VALIDER)
         chemin = os.path.join(dossier, nom)
         try:
             with open(chemin, "r", encoding="utf-8", errors="replace") as fichier:
-                dictees[identifiant] = fichier.read()
+                texte = fichier.read()
             os.unlink(chemin)
         except OSError:
             continue
-    return dictees
+        depots.setdefault(identifiant, []).append((numero, texte, valider))
+    return {identifiant: ("".join(texte for _, texte, _ in sorted(liste)),
+                          any(valider for _, _, valider in liste))
+            for identifiant, liste in depots.items()}
 
 
 def tracer_dictee(message, dossier=None):
@@ -247,14 +260,19 @@ def tracer_dictee(message, dossier=None):
         pass
 
 
-def deposer_dictee(identifiant, texte, dossier=None):
-    """Ce qu'ecrit claude-dictee.sh pour un onglet du panneau. Pour les tests."""
+def deposer_dictee(identifiant, texte, dossier=None, suffixe=""):
+    """Ce qu'ecrit claude-dictee.sh pour un onglet du panneau. Pour les tests.
+
+    `suffixe` : "" pour la forme d'origine, "@0001" pour un morceau, "@0002.valider"
+    (texte vide) pour la validation seule.
+    """
     dossier = dossier or dossier_etat()
     os.makedirs(dossier, exist_ok=True)
-    provisoire = os.path.join(dossier, PREFIXE_DICTEE + identifiant + ".tmp")
+    nom = PREFIXE_DICTEE + identifiant + suffixe
+    provisoire = os.path.join(dossier, "." + nom + ".tmp")
     with open(provisoire, "w", encoding="utf-8") as fichier:
         fichier.write(texte)
-    os.replace(provisoire, os.path.join(dossier, PREFIXE_DICTEE + identifiant))
+    os.replace(provisoire, os.path.join(dossier, nom))
 
 
 def variables_de_session(identifiant, pid_fenetre):
