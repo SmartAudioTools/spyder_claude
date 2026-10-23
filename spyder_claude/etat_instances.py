@@ -271,3 +271,77 @@ def variables_de_session(identifiant, pid_fenetre):
     """
     return {"SPYDER_CLAUDE_PANE": str(identifiant),
             "SPYDER_CLAUDE_WINDOW": str(pid_fenetre)}
+
+
+# ---------------------------------------------------------------- boite aux lettres du dock
+#
+# Une SESSION Claude (compte isole, bac a sable) demande au dock d'ouvrir ou de fermer un
+# onglet (utilisateur, 23/10/2026 : « l'architecte decide d'ouvrir lui-meme des nouveaux
+# onglets [...] ou en fermer si un worker a fini le travail »). Le socket du dock
+# (claude-dock.sock) lui est inaccessible : AF_UNIX est bloque dans le bac a sable, et il vit
+# dans le XDG_RUNTIME_DIR du compte principal. Le registre, lui, est ecrit par les sessions
+# depuis le debut (ACL claude:rw) : une demande est un fichier `dock-demande-<id>`, une ligne
+# de la forme du menu de Dolphin (`lancer<TAB>dossier<TAB>nom<TAB>modele<TAB>message`,
+# `fermer<TAB>session_id`) ; le dock la CONSOMME au battement suivant et repond dans
+# `dock-reponse-<id>` (« ok ... » / « refus ... »), que le demandeur lit puis efface.
+# Meme principe que la demande de focus : une demande se consomme, elle ne se relit pas.
+
+PREFIXE_DEMANDE_DOCK = "dock-demande-"
+PREFIXE_REPONSE_DOCK = "dock-reponse-"
+
+
+def demandes_au_dock(dossier=None):
+    """[(identifiant, ligne)] des demandes deposees, dans l'ordre des noms, CONSOMMEES."""
+    dossier = dossier or dossier_etat()
+    try:
+        noms = sorted(os.listdir(dossier))
+    except OSError:
+        return []
+    demandes = []
+    for nom in noms:
+        if not nom.startswith(PREFIXE_DEMANDE_DOCK) or nom.endswith(".tmp"):
+            continue
+        chemin = os.path.join(dossier, nom)
+        try:
+            with open(chemin, "r", encoding="utf-8", errors="replace") as fichier:
+                ligne = fichier.read()
+            os.unlink(chemin)
+        except OSError:
+            continue
+        demandes.append((nom[len(PREFIXE_DEMANDE_DOCK):], ligne))
+    return demandes
+
+
+def repondre_au_dock(identifiant, texte, dossier=None):
+    """Ecrit la reponse du dock a la demande `identifiant` (atomique : .tmp puis rename)."""
+    dossier = dossier or dossier_etat()
+    provisoire = os.path.join(dossier, PREFIXE_REPONSE_DOCK + identifiant + ".tmp")
+    try:
+        with open(provisoire, "w", encoding="utf-8") as fichier:
+            fichier.write(texte.rstrip("\n") + "\n")
+        os.replace(provisoire, os.path.join(dossier, PREFIXE_REPONSE_DOCK + identifiant))
+    except OSError:
+        pass
+
+
+def deposer_demande_au_dock(identifiant, ligne, dossier=None):
+    """Ce que fait claude-dock.sh cote session ; ici pour les tests et le diagnostic."""
+    dossier = dossier or dossier_etat()
+    os.makedirs(dossier, exist_ok=True)
+    provisoire = os.path.join(dossier, PREFIXE_DEMANDE_DOCK + identifiant + ".tmp")
+    with open(provisoire, "w", encoding="utf-8") as fichier:
+        fichier.write(ligne.rstrip("\n") + "\n")
+    os.replace(provisoire, os.path.join(dossier, PREFIXE_DEMANDE_DOCK + identifiant))
+
+
+def reponse_du_dock(identifiant, dossier=None):
+    """La reponse a `identifiant`, consommee ; None tant que le dock n'a pas repondu."""
+    dossier = dossier or dossier_etat()
+    chemin = os.path.join(dossier, PREFIXE_REPONSE_DOCK + identifiant)
+    try:
+        with open(chemin, "r", encoding="utf-8", errors="replace") as fichier:
+            texte = fichier.read()
+        os.unlink(chemin)
+    except OSError:
+        return None
+    return texte.rstrip("\n")

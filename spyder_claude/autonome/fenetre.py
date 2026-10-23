@@ -41,6 +41,7 @@ import ast
 import configparser
 import json
 import os
+import shlex
 import shutil
 import sys
 import time
@@ -559,11 +560,12 @@ class FenetreClaude(QMainWindow):
     # ------------------------------------------------------------------ sessions
 
     def ouvrir_session(self, dossier=None, conversation=None, nouvelle=False, options="",
-                       role=None):
+                       role=None, nom=None):
         """main_widget.ouvrir_terminal. `conversation` reprend ce session_id par `-r` ;
         `nouvelle` lance `claude` sans selecteur (« Nouveau Claude » de Dolphin), avec
         `options` en plus (modele, nom, premier message : cf. `EQUIPE`) ; `role` est
-        celui que la session tient dans l'equipe du dossier (`_memoriser_les_sessions`)."""
+        celui que la session tient dans l'equipe du dossier (`_memoriser_les_sessions`) ;
+        `nom` ne fait que titrer l'onglet (un worker : hors equipe, non memorise)."""
         if not self._moteur:
             self._etat_vide("Le moteur de Konsole n'est pas construit sur cette machine.\n\n"
                             "Lancer le script qtermwidget_binding/build.sh du dépôt "
@@ -576,7 +578,7 @@ class FenetreClaude(QMainWindow):
 
         vue = self._fabrique_vue(self._onglets)
         depot = os.path.basename(dossier.rstrip("/")) or "/"
-        titre = "%s : %s" % (role or "Claude", depot)
+        titre = "%s : %s" % (nom or role or "Claude", depot)
         self._vues.append(vue)
         if role:
             self._roles[vue] = (dossier, role)
@@ -694,6 +696,50 @@ class FenetreClaude(QMainWindow):
             if self.ouvrir_session(dossier, conversation=session, role=role) is None:
                 return False
         return True
+
+    # ------------------------------------------------------------------ demandes des sessions
+
+    def demande_de_session(self, ligne):
+        """Une demande deposee dans le registre par une session (claude-dock.sh) ; rend la
+        reponse, « ok ... » ou « refus <raison> ».
+
+        `lancer<TAB>dossier<TAB>nom<TAB>modele<TAB>message` : un onglet neuf dans `dossier`,
+        session nommee `nom` (`-n`), sur `modele` (`--model`, vide : celui par defaut), dont
+        `message` est le premier message (vide : aucun) - un WORKER ouvert par l'Architecte
+        (utilisateur, 23/10/2026 : autant qu'il y a de taches independantes, pas de plafond).
+        Hors equipe : le dock le rouvre au prochain lancement comme toute session, mais
+        « Reprendre équipe » ne le concerne pas. Le dock ne se montre pas : l'utilisateur
+        n'a rien demande, lui.
+        `fermer<TAB>session_id` : la croix de l'onglet qui tient cette conversation - un
+        worker qui a rendu ; refus si aucun onglet de ce dock ne la tient (pas encore vue
+        par claude-statusline, ou ouverte ailleurs).
+        """
+        champs = ligne.rstrip("\n").split("\t")
+        mode = champs[0]
+        if mode == "lancer":
+            dossier, nom, modele, message = (champs[1:] + ["", "", "", ""])[:4]
+            if not os.path.isdir(dossier):
+                return "refus dossier introuvable : %s" % dossier
+            if not nom.strip():
+                return "refus nom de session vide"
+            options = []
+            if modele:
+                options += ["--model", shlex.quote(modele)]
+            options += ["-n", shlex.quote(nom)]
+            if message:
+                options.append(shlex.quote(message))
+            if self.ouvrir_session(dossier, nouvelle=True, options=" ".join(options),
+                                   nom=nom) is None:
+                return "refus le dock ne peut pas ouvrir de session"
+            return "ok %s" % nom
+        if mode == "fermer":
+            session = champs[1] if len(champs) > 1 else ""
+            for vue, (conversation, _dossier) in list(self._conversations.items()):
+                if conversation == session:
+                    self._fermer_session(vue)
+                    return "ok %s" % session
+            return "refus aucun onglet de ce dock ne tient la session %s" % session
+        return "refus demande inconnue : %s" % mode
 
     def _equipes(self):
         """{dossier: {role: session_id}}, cle `equipes` ; illisible : vide."""
@@ -1284,6 +1330,8 @@ class FenetreClaude(QMainWindow):
                 self._appliquer_etat(vue, etat)
 
         self._rafraichir_vocal()
+        for identifiant, ligne in etat_instances.demandes_au_dock():
+            etat_instances.repondre_au_dock(identifiant, self.demande_de_session(ligne))
         cible = etat_instances.demande_de_focus()
         if cible:
             self.activer_session(cible)

@@ -25,7 +25,7 @@ from qtpy.QtWidgets import QApplication, QTabBar, QVBoxLayout, QWidget  # noqa: 
 
 APP = QApplication.instance() or QApplication([])
 
-from spyder_claude import usage  # noqa: E402
+from spyder_claude import etat_instances, usage  # noqa: E402
 from spyder_claude.autonome.fenetre import (FenetreClaude,  # noqa: E402
                                             demande_de_la_ligne_de_commande)
 
@@ -761,6 +761,91 @@ class TestTitre(Banc):
                 return fichier.read().splitlines()
         except FileNotFoundError:
             return []
+
+
+
+class TestDemandesDesSessions(Banc):
+    """La boite aux lettres du registre : une session (claude-dock.sh) demande au dock
+    d'ouvrir ou de fermer un onglet (utilisateur, 23/10/2026 : « l'architecte decide
+    d'ouvrir lui-meme des nouveaux onglets [...] ou en fermer si un worker a fini »)."""
+
+    def fenetre_prete(self):
+        f = self.fenetre(commande="claude -r")
+        f.demarrer()
+        f.montrees = []
+        f._se_montrer = lambda: f.montrees.append(True)
+        return f
+
+    def depot(self, nom="SmartOS"):
+        dossier = os.path.join(self.temporaire, nom)
+        os.makedirs(dossier, exist_ok=True)
+        return dossier
+
+    def test_lancer_ouvre_un_worker_nomme_sur_son_modele_avec_son_premier_message(self):
+        f = self.fenetre_prete()
+        depot = self.depot()
+        avant = len(f.sessions())
+        etat_instances.deposer_demande_au_dock(
+            "d1", "lancer\t%s\tWorker 3 SmartOS\tclaude-opus-5-5\tworker\n" % depot)
+        f.relire_le_registre()
+        self.assertEqual(etat_instances.reponse_du_dock("d1"), "ok Worker 3 SmartOS")
+        self.assertEqual(etat_instances.demandes_au_dock(), [])   # consommee
+        vue = f.sessions()[-1]
+        self.assertEqual(len(f.sessions()), avant + 1)
+        self.assertEqual(vue.demarrages[0][1], depot)
+        self.assertEqual(vue.envois, [
+            "clear; claude --model claude-opus-5-5 -n 'Worker 3 SmartOS' worker\n"])
+        self.assertEqual(f._titres[vue], "Worker 3 SmartOS : SmartOS")
+        self.assertEqual(f.montrees, [])            # rien demande par l'utilisateur
+        self.assertNotIn(vue, f._roles)             # hors equipe
+
+    def test_lancer_sans_modele_ni_message_et_message_a_espaces_cite(self):
+        f = self.fenetre_prete()
+        depot = self.depot()
+        etat_instances.deposer_demande_au_dock("d1", "lancer\t%s\tW\t\t\n" % depot)
+        etat_instances.deposer_demande_au_dock("d2", "lancer\t%s\tW 2\t\tdeux mots\n" % depot)
+        f.relire_le_registre()
+        self.assertEqual(etat_instances.reponse_du_dock("d1"), "ok W")
+        self.assertEqual(etat_instances.reponse_du_dock("d2"), "ok W 2")
+        un, deux = f.sessions()[-2:]
+        self.assertEqual(un.envois, ["clear; claude -n W\n"])
+        self.assertEqual(deux.envois, ["clear; claude -n 'W 2' 'deux mots'\n"])
+
+    def test_lancer_refuse_un_dossier_absent_ou_un_nom_vide(self):
+        f = self.fenetre_prete()
+        avant = len(f.sessions())
+        etat_instances.deposer_demande_au_dock(
+            "d1", "lancer\t%s\tW\t\t\n" % os.path.join(self.temporaire, "absent"))
+        etat_instances.deposer_demande_au_dock("d2", "lancer\t%s\t \t\t\n" % self.depot())
+        etat_instances.deposer_demande_au_dock("d3", "danser\tx\n")
+        f.relire_le_registre()
+        self.assertTrue(etat_instances.reponse_du_dock("d1").startswith("refus dossier"))
+        self.assertEqual(etat_instances.reponse_du_dock("d2"), "refus nom de session vide")
+        self.assertTrue(etat_instances.reponse_du_dock("d3").startswith("refus demande inconnue"))
+        self.assertEqual(len(f.sessions()), avant)
+
+    def test_fermer_arrete_l_onglet_qui_tient_la_session_et_le_marque_fermee(self):
+        f = self.fenetre_prete()
+        depot = self.depot()
+        f.demande_du_menu("lancer\t%s\n" % depot)
+        vue = f.sessions()[-1]
+        self.statusline(os.getpid(), f.identifiant_de(vue), "sess-worker", depot)
+        f.relire_le_registre()
+        etat_instances.deposer_demande_au_dock("d1", "fermer\tsess-worker\n")
+        f.relire_le_registre()
+        self.assertEqual(etat_instances.reponse_du_dock("d1"), "ok sess-worker")
+        self.assertEqual(vue.arrets, [False])
+        vue.sig_termine.emit(0)
+        APP.processEvents()
+        self.assertNotIn(vue, f.sessions())
+        self.assertIn("sess-worker", f._sessions_fermees())
+
+    def test_fermer_refuse_une_session_que_ce_dock_ne_tient_pas(self):
+        f = self.fenetre_prete()
+        etat_instances.deposer_demande_au_dock("d1", "fermer\tsess-inconnue\n")
+        f.relire_le_registre()
+        self.assertTrue(etat_instances.reponse_du_dock("d1").startswith("refus aucun onglet"))
+        self.assertIsNone(etat_instances.reponse_du_dock("d1"))   # consommee
 
 
 if __name__ == "__main__":

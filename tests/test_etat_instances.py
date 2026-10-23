@@ -122,6 +122,28 @@ class TestDemandeDeFocus(BaseRegistre):
         self.assertEqual(etat_instances.demande_de_focus(), "abc123")
 
 
+class TestDemandesAuDock(BaseRegistre):
+    """La boite aux lettres : une session depose, le dock consomme et repond, la session
+    consomme la reponse (23/10/2026, workers ouverts par l'Architecte)."""
+
+    def test_vide_par_defaut(self):
+        self.assertEqual(etat_instances.demandes_au_dock(), [])
+        self.assertIsNone(etat_instances.reponse_du_dock("x"))
+
+    def test_deposees_lues_dans_l_ordre_et_consommees_puis_repondues(self):
+        etat_instances.deposer_demande_au_dock("b", "fermer\tsess\n")
+        etat_instances.deposer_demande_au_dock("a", "lancer\t/d\tW\t\t\n")
+        with open(os.path.join(self.registre, "dock-demande-c.tmp"), "w") as f:
+            f.write("en cours d'ecriture")
+        self.assertEqual(etat_instances.demandes_au_dock(),
+                         [("a", "lancer\t/d\tW\t\t\n"), ("b", "fermer\tsess\n")])
+        self.assertEqual(etat_instances.demandes_au_dock(), [])      # consommees
+        self.assertTrue(os.path.exists(os.path.join(self.registre, "dock-demande-c.tmp")))
+        etat_instances.repondre_au_dock("a", "ok W")
+        self.assertEqual(etat_instances.reponse_du_dock("a"), "ok W")
+        self.assertIsNone(etat_instances.reponse_du_dock("a"))        # consommee
+
+
 class TestVariablesDeSession(unittest.TestCase):
 
     def test_les_deux_variables_attendues_par_le_hook(self):
