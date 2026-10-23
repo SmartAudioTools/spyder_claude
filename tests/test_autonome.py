@@ -278,6 +278,7 @@ class TestReprise(Banc):
         f.relire_le_registre()
         self.assertEqual(json.loads(f._reglages.value("sessions_ouvertes")),
                          [["abc-123", "/projet"]])
+        self.assertEqual(f._sessions_fermees(), [])
 
     def test_ne_reprend_pas_une_conversation_deja_ouverte_ailleurs(self):
         """GARDE-FOU DE DOUBLE REPRISE (Superviseur, 11/10/2026) : le dock de Spyder rouvre
@@ -310,6 +311,54 @@ class TestReprise(Banc):
                          [["clear; cat -r du-dock\n"], ["clear; cat -r commune\n"],
                           ["clear; cat -r de-spyder\n"]])
         self.assertEqual(f.sessions()[2].demarrages[0][1], "/s")
+
+    def spyder_ini(self, *sessions):
+        dossier = os.path.join(os.environ["SPYDER_CONFDIR"], "config")
+        os.makedirs(dossier, exist_ok=True)
+        with open(os.path.join(dossier, "spyder.ini"), "w", encoding="utf-8") as ini:
+            ini.write("[claude_pane]\nsessions_ouvertes = %r\n" % [list(s) for s in sessions])
+
+    def test_fermee_dans_le_dock_ne_revient_pas_de_smartpythoneditor(self):
+        """« il se souvient de sessions que j'ai pourtant fermées et qui me rouvrent à
+        chaque fois que je lance Claude Dock » (utilisateur, 23/10/2026) : le dock lit la
+        liste de SmartPythonEditor sans la modifier, il doit donc retenir lui-meme ce qu'il
+        a ferme. Echoue sans `_marquer_fermee` / le filtre de `rouvrir_les_sessions`."""
+        self.spyder_ini(("de-spyder", "/s"), ("gardee", "/g"))
+        f = self.fenetre()
+        f.demarrer()
+        fermee, gardee = f.sessions()
+        self.assertEqual(fermee.envois, ["clear; cat -r de-spyder\n"])
+        f._fermer_par_coin(f._onglets.tabBar().tabButton(0, QTabBar.RightSide))
+        fermee.terminer()
+        self.assertEqual(f._sessions_fermees(), ["de-spyder"])
+        f.close()
+
+        g = self.fenetre()
+        g.demarrer()
+        self.assertEqual([v.envois for v in g.sessions()], [["clear; cat -r gardee\n"]])
+
+    def test_reprise_volontaire_efface_la_fermeture(self):
+        """Rouverte par le selecteur ou « Reprendre Claude » : ce n'est plus une fermee."""
+        f = self.fenetre(sessions_fermees=json.dumps(["x", "y"]))
+        f.demarrer()
+        vue = f.sessions()[0]
+        self.statusline(os.getpid(), f.identifiant_de(vue), "x", "/x")
+        f.relire_le_registre()
+        self.assertEqual(f._sessions_fermees(), ["y"])
+
+    def test_les_fermees_suivent_la_liste_de_smartpythoneditor(self):
+        """Ce que SmartPythonEditor ne memorise plus n'a plus rien a filtrer : la liste des
+        fermees ne grossit pas sans fin. Une liste de SmartPythonEditor vide ou illisible
+        ne la vide pas (rien n'est filtre, rien n'est oublie)."""
+        f = self.fenetre(sessions_fermees=json.dumps(["vieille", "de-spyder"]))
+        f.demarrer()
+        self.assertEqual(f._sessions_fermees(), ["vieille", "de-spyder"])
+        f.close()
+        self.spyder_ini(("de-spyder", "/s"))
+        g = self.fenetre(sessions_fermees=json.dumps(["vieille", "de-spyder"]))
+        g.demarrer()
+        self.assertEqual(g._sessions_fermees(), ["de-spyder"])
+        self.assertEqual(g.sessions()[0].envois, ["clear; cat\n"])
 
     def test_entree_illisible_ignoree(self):
         f = self.fenetre(sessions_ouvertes="pas du json")

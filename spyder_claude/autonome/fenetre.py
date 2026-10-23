@@ -295,6 +295,7 @@ class FenetreClaude(QMainWindow):
     VITESSE_MAXIMALE_DEFAUT = 50.0
     PERIODE_SONDAGE = 500
     CLE_SESSIONS = "sessions_ouvertes"
+    CLE_FERMEES = "sessions_fermees"
     PERIODE_RELANCE = 100
     PLAFOND_RELANCE = 10000
     PLAFOND_VOILE = 10000
@@ -974,6 +975,7 @@ class FenetreClaude(QMainWindow):
     def _session_terminee(self, vue, _code=0):
         if self._en_fermeture:
             return
+        self._marquer_fermee(vue)
         self._oublier(vue)
         if self._en_mosaique:
             self._mosaique.liberer()
@@ -1232,7 +1234,37 @@ class FenetreClaude(QMainWindow):
         if liste != self._sessions_memorisees:
             self._sessions_memorisees = liste
             self._reglages.setValue(self.CLE_SESSIONS, json.dumps(liste))
+            # Reprise volontaire (« Reprendre Claude », selecteur) : plus une fermeture.
+            ouvertes = {session for session, _ in liste}
+            self._ecrire_les_fermees(
+                [s for s in self._sessions_fermees() if s not in ouvertes])
             self._reglages.sync()
+
+    def _sessions_fermees(self):
+        """Les conversations fermees dans CE dock, cle `sessions_fermees` ; illisible : vide."""
+        try:
+            valeur = json.loads(self._reglages.value(self.CLE_FERMEES, "") or "[]")
+        except (TypeError, ValueError):
+            return []
+        return [s for s in valeur if isinstance(s, str)] if isinstance(valeur, list) else []
+
+    def _ecrire_les_fermees(self, fermees):
+        if fermees != self._sessions_fermees():
+            self._reglages.setValue(self.CLE_FERMEES, json.dumps(fermees))
+            self._reglages.sync()
+
+    def _marquer_fermee(self, vue):
+        """Une session qui se termine dans le dock (croix, /exit, sortie du shell - tout
+        sauf la fermeture de la fenetre) sort de sa liste au battement suivant ; elle ne
+        doit pas revenir non plus par celles de SmartPythonEditor, que le dock lit sans
+        pouvoir les modifier (« il se souvient de sessions que j'ai pourtant fermées et
+        qui me rouvrent à chaque fois », utilisateur, 23/10/2026)."""
+        conversation = self._conversations.get(vue)
+        if not conversation:
+            return
+        fermees = self._sessions_fermees()
+        if conversation[0] not in fermees:
+            self._ecrire_les_fermees(fermees + [conversation[0]])
 
     def rouvrir_les_sessions(self):
         """Rouvre les conversations memorisees, et arme la memorisation.
@@ -1249,6 +1281,13 @@ class FenetreClaude(QMainWindow):
         ouvert porte deja. ⚠ L'inverse n'est pas garde : `main_widget.rouvrir_les_sessions`
         ne saute pas les conversations vivantes, donc un SmartPythonEditor lance APRES le
         dock reprendrait aussi celles que le dock lui a reprises.
+
+        Celles que l'utilisateur a FERMEES dans le dock (`sessions_fermees`, cf.
+        `_marquer_fermee`) ne sont pas reprises de SmartPythonEditor, dont la liste ne
+        bouge qu'a ses propres fermetures (23/10/2026). La liste des fermees suit la
+        sienne : une conversation qu'il ne memorise plus n'y reste pas. Ce que cela
+        attrape a tort : une conversation fermee ici, puis rouverte et gardee DANS
+        SmartPythonEditor, ne revient dans le dock que par le selecteur.
         """
         try:
             entrees = json.loads(self._reglages.value(self.CLE_SESSIONS, "") or "[]")
@@ -1257,13 +1296,27 @@ class FenetreClaude(QMainWindow):
         if not isinstance(entrees, list):
             entrees = []
         a_rouvrir = []
-        for entree in entrees + sessions_de_smartpythoneditor():
+
+        def retenir(entree, ignorees=()):
             try:
                 session, dossier = entree
             except (TypeError, ValueError):
-                continue
-            if session and session not in (s for s, _ in a_rouvrir):
+                return None
+            if session and session not in ignorees \
+                    and session not in (s for s, _ in a_rouvrir):
                 a_rouvrir.append([session, dossier])
+            return session
+
+        for entree in entrees:
+            retenir(entree)
+        fermees = self._sessions_fermees()
+        importees = set()
+        for entree in sessions_de_smartpythoneditor():
+            session = retenir(entree, fermees)
+            if session:
+                importees.add(session)
+        if importees:
+            self._ecrire_les_fermees([s for s in fermees if s in importees])
         self._sessions_memorisees = a_rouvrir
         vivantes = usage.sessions_vivantes()
         deja_ouvertes = []
