@@ -296,6 +296,7 @@ class FenetreClaude(QMainWindow):
     PERIODE_SONDAGE = 500
     CLE_SESSIONS = "sessions_ouvertes"
     CLE_FERMEES = "sessions_fermees"
+    CLE_EQUIPES = "equipes"
     PERIODE_RELANCE = 100
     PLAFOND_RELANCE = 10000
     PLAFOND_VOILE = 10000
@@ -307,6 +308,16 @@ class FenetreClaude(QMainWindow):
         ("Nouveau superviseur Fable", "--model claude-fable-5-1 -n Superviseur supervise"),
         ("Nouveau worker Fable", "--model claude-fable-5-1"),
         ("Nouveau worker Opus", "--model claude-opus-5-5"),
+    )
+    #: Une EQUIPE par depot (decision de l'utilisateur, 23/10/2026 : « une équipe par dépôt,
+    #: Architecte compris ») : un role par onglet, chaque session nommee « <Role> <depot> »
+    #: pour que deux depots puissent avoir chacun la leur (CLAUDE_supervision.md), et son
+    #: role donne en premier message - le GESTE qui le declenche. Les workers ne font pas
+    #: partie de l'equipe : ils s'ouvrent par tache (« Nouveau Claude »), autant que
+    #: necessaire, et le dock les rouvre deja au lancement comme les autres.
+    EQUIPE = (
+        ("Architecte", "--model claude-fable-5-1 -n 'Architecte {depot}' architecte"),
+        ("Orchestrateur", "--model claude-opus-5-5 -n 'Orchestrateur {depot}' orchestre"),
     )
 
     #: Boutons de fenetre : les mesures et le style de spyder_window_controls (plugin.py,
@@ -379,6 +390,7 @@ class FenetreClaude(QMainWindow):
         self._relances = {}
         self._calmes = {}
         self._conversations = {}
+        self._roles = {}            # vue -> (dossier, role) : membre d'une equipe
         self._sessions_memorisees = None
         self._en_mosaique = False
         self._en_fermeture = False
@@ -546,9 +558,12 @@ class FenetreClaude(QMainWindow):
 
     # ------------------------------------------------------------------ sessions
 
-    def ouvrir_session(self, dossier=None, conversation=None, nouvelle=False):
+    def ouvrir_session(self, dossier=None, conversation=None, nouvelle=False, options="",
+                       role=None):
         """main_widget.ouvrir_terminal. `conversation` reprend ce session_id par `-r` ;
-        `nouvelle` lance `claude` sans selecteur (« Nouveau Claude » de Dolphin)."""
+        `nouvelle` lance `claude` sans selecteur (« Nouveau Claude » de Dolphin), avec
+        `options` en plus (modele, nom, premier message : cf. `EQUIPE`) ; `role` est
+        celui que la session tient dans l'equipe du dossier (`_memoriser_les_sessions`)."""
         if not self._moteur:
             self._etat_vide("Le moteur de Konsole n'est pas construit sur cette machine.\n\n"
                             "Lancer le script qtermwidget_binding/build.sh du dépôt "
@@ -560,8 +575,11 @@ class FenetreClaude(QMainWindow):
         variables = etat_instances.variables_de_session(identifiant, os.getpid())
 
         vue = self._fabrique_vue(self._onglets)
-        titre = "Claude : %s" % (os.path.basename(dossier.rstrip("/")) or "/")
+        depot = os.path.basename(dossier.rstrip("/")) or "/"
+        titre = "%s : %s" % (role or "Claude", depot)
         self._vues.append(vue)
+        if role:
+            self._roles[vue] = (dossier, role)
         self._titres[vue] = titre
         self._identifiants[vue] = identifiant
         if self._en_mosaique:
@@ -580,7 +598,7 @@ class FenetreClaude(QMainWindow):
             self._conversations[vue] = (conversation, dossier)
             self._lancer(vue, self._commande_nouvelle_session("-r " + conversation))
         elif nouvelle:
-            self._lancer(vue, self._commande_nouvelle_session(""))
+            self._lancer(vue, self._commande_nouvelle_session(options.format(depot=depot)))
         else:
             self._lancer(vue, self.commande_claude())
             self._poser_bandeau(vue)
@@ -624,14 +642,87 @@ class FenetreClaude(QMainWindow):
         client.disconnectFromServer()
 
     def demande_du_menu(self, ligne):
-        """`lancer<TAB>dossier` : session neuve ; `reprendre<TAB>dossier` : le selecteur."""
+        """`lancer<TAB>dossier` : session neuve ; `reprendre<TAB>dossier` : le selecteur ;
+        `equipe<TAB>dossier` : une equipe neuve ; `reprendre-equipe<TAB>dossier` : la
+        sienne, memorisee (« Nouvelle équipe » / « Reprendre équipe », 23/10/2026)."""
         mode, _, dossier = ligne.rstrip("\n").partition("\t")
-        if mode not in ("lancer", "reprendre") or not os.path.isdir(dossier):
+        if not os.path.isdir(dossier):
             return False
-        if self.ouvrir_session(dossier, nouvelle=(mode == "lancer")) is None:
+        if mode in ("lancer", "reprendre"):
+            fait = self.ouvrir_session(dossier, nouvelle=(mode == "lancer")) is not None
+        elif mode == "equipe":
+            fait = self.ouvrir_equipe(dossier)
+        elif mode == "reprendre-equipe":
+            fait = self.reprendre_equipe(dossier)
+        else:
             return False
-        self._se_montrer()
+        if fait:
+            self._se_montrer()
+        return fait
+
+    # ------------------------------------------------------------------ equipes
+
+    def ouvrir_equipe(self, dossier):
+        """Un onglet par role de `EQUIPE`, dans ce dossier. L'equipe memorisee pour ce
+        dossier est effacee TOUT DE SUITE : ses sessions sont remplacees, et un « Reprendre
+        équipe » lance avant que les neuves soient connues ne doit pas rouvrir les vieilles."""
+        equipes = self._equipes()
+        if equipes.pop(dossier, None) is not None:
+            self._ecrire_les_equipes(equipes)
+        for role, options in self.EQUIPE:
+            if self.ouvrir_session(dossier, nouvelle=True, options=options, role=role) is None:
+                return False
         return True
+
+    def reprendre_equipe(self, dossier):
+        """Rouvre les sessions de l'equipe memorisee pour ce dossier. Faux sans equipe.
+
+        Celles deja ouvertes - ici, ou par une instance vivante d'ailleurs (meme garde-fou
+        que `rouvrir_les_sessions`) - ne sont pas reprises une seconde fois ; une equipe
+        entierement ouverte est donc un succes qui ne fait que montrer le dock. Une session
+        fermee a la croix revient : c'est une reprise VOLONTAIRE, elle sort des fermees au
+        battement suivant (`_memoriser_les_sessions`).
+        """
+        equipe = self._equipes().get(dossier)
+        if not equipe:
+            return False
+        ouvertes = {conversation[0] for conversation in self._conversations.values()}
+        ouvertes |= usage.sessions_vivantes()
+        for role, session in equipe.items():
+            if session in ouvertes:
+                continue
+            if self.ouvrir_session(dossier, conversation=session, role=role) is None:
+                return False
+        return True
+
+    def _equipes(self):
+        """{dossier: {role: session_id}}, cle `equipes` ; illisible : vide."""
+        try:
+            valeur = json.loads(self._reglages.value(self.CLE_EQUIPES, "") or "{}")
+        except (TypeError, ValueError):
+            return {}
+        if not isinstance(valeur, dict):
+            return {}
+        return {dossier: {role: session for role, session in roles.items()
+                          if isinstance(session, str)}
+                for dossier, roles in valeur.items() if isinstance(roles, dict)}
+
+    def _ecrire_les_equipes(self, equipes):
+        if equipes != self._equipes():
+            self._reglages.setValue(self.CLE_EQUIPES, json.dumps(equipes))
+            self._reglages.sync()
+
+    def _memoriser_les_equipes(self):
+        """Les roles dont la conversation est connue rejoignent l'equipe de leur dossier ;
+        les roles des autres dossiers, et ceux pas encore connus, restent tels quels."""
+        if not self._roles:
+            return
+        equipes = self._equipes()
+        for vue, (dossier, role) in self._roles.items():
+            conversation = self._conversations.get(vue)
+            if conversation:
+                equipes.setdefault(dossier, {})[role] = conversation[0]
+        self._ecrire_les_equipes(equipes)
 
     def _se_montrer(self):
         if self.isMinimized():
@@ -968,6 +1059,7 @@ class FenetreClaude(QMainWindow):
         self._etats_osc.pop(vue, None)
         self._dernieres_vitesses.pop(vue, None)
         self._conversations.pop(vue, None)
+        self._roles.pop(vue, None)
         self._bandeaux.pop(vue, None)
         self._arreter_relance(vue)
         self._coins.pop(vue, None)   # detruit par removeTab avec son onglet
@@ -1239,6 +1331,7 @@ class FenetreClaude(QMainWindow):
             self._ecrire_les_fermees(
                 [s for s in self._sessions_fermees() if s not in ouvertes])
             self._reglages.sync()
+        self._memoriser_les_equipes()
 
     def _sessions_fermees(self):
         """Les conversations fermees dans CE dock, cle `sessions_fermees` ; illisible : vide."""
@@ -1416,16 +1509,30 @@ class FenetreClaude(QMainWindow):
             peintre.end()
 
 
+def demande_de_la_ligne_de_commande(argv):
+    """`claude-dock [dossier]`, ou `claude-dock --equipe|--reprendre-equipe dossier` :
+    (dossier des nouvelles sessions, demande du menu a servir une fois lance ou None).
+
+    Les deux options sont ce que `claude_dolphin.sh` lance quand AUCUN dock n'ecoute :
+    une equipe n'a pas de Konsole de repli, c'est le dock qui la porte (23/10/2026).
+    """
+    if len(argv) > 2 and argv[1] in ("--equipe", "--reprendre-equipe"):
+        dossier = os.path.abspath(argv[2])
+        return dossier, "%s\t%s\n" % (argv[1][2:], dossier)
+    return (os.path.abspath(argv[1]) if len(argv) > 1 else None), None
+
+
 def main(argv=None):
-    """`claude-dock [dossier]` : le dossier ou s'ouvrent les nouvelles sessions."""
     argv = sys.argv if argv is None else argv
     application = QApplication.instance() or QApplication(argv)
     application.setApplicationName("claude-dock")
     application.setDesktopFileName("claude-dock")
-    dossier = os.path.abspath(argv[1]) if len(argv) > 1 else None
+    dossier, demande = demande_de_la_ligne_de_commande(argv)
     theme = theme_smartpythoneditor(application)
     fenetre = FenetreClaude(dossier=dossier, theme=theme)
     fenetre.show()
     fenetre.demarrer()
+    if demande:
+        fenetre.demande_du_menu(demande)
     fenetre.ecouter()
     return application.exec_()

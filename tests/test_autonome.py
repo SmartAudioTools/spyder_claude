@@ -26,7 +26,8 @@ from qtpy.QtWidgets import QApplication, QTabBar, QVBoxLayout, QWidget  # noqa: 
 APP = QApplication.instance() or QApplication([])
 
 from spyder_claude import usage  # noqa: E402
-from spyder_claude.autonome.fenetre import FenetreClaude  # noqa: E402
+from spyder_claude.autonome.fenetre import (FenetreClaude,  # noqa: E402
+                                            demande_de_la_ligne_de_commande)
 
 
 class FausseVue(QWidget):
@@ -550,6 +551,129 @@ class TestMenuDeDolphin(Banc):
         self.assertFalse(f.demande_du_menu("lancer\t/nulle/part\n"))
         self.assertEqual(f.sessions(), [])
         self.assertEqual(f.montrees, [])
+
+
+class TestEquipe(Banc):
+    """« Nouvelle équipe » / « Reprendre équipe » du menu de Dolphin (utilisateur,
+    23/10/2026 : « une équipe par dépôt », « nouvelle équipe et reprendre équipe »)."""
+
+    def fenetre_du_menu(self):
+        f = self.fenetre(commande="claude -r")
+        f.demarrer()
+        f.montrees = []
+        f._se_montrer = lambda: f.montrees.append(True)
+        return f
+
+    def depot(self, nom="SmartOS"):
+        dossier = os.path.join(self.temporaire, nom)
+        os.makedirs(dossier, exist_ok=True)
+        return dossier
+
+    def test_nouvelle_equipe_un_onglet_par_role_nomme_et_lance_sur_son_role(self):
+        f = self.fenetre_du_menu()
+        depot = self.depot()
+        self.assertTrue(f.demande_du_menu("equipe\t%s\n" % depot))
+        vues = f.sessions()[-2:]
+        self.assertEqual([v.demarrages[0][1] for v in vues], [depot, depot])
+        self.assertEqual(
+            [v.envois for v in vues],
+            [["clear; claude --model claude-fable-5-1 -n 'Architecte SmartOS' architecte\n"],
+             ["clear; claude --model claude-opus-5-5 -n 'Orchestrateur SmartOS' orchestre\n"]])
+        self.assertEqual([f._titres[v] for v in vues],
+                         ["Architecte : SmartOS", "Orchestrateur : SmartOS"])
+        self.assertEqual(f.montrees, [True])
+
+    def test_l_equipe_est_memorisee_role_par_role_quand_ses_sessions_sont_connues(self):
+        f = self.fenetre_du_menu()
+        depot = self.depot()
+        f.demande_du_menu("equipe\t%s\n" % depot)
+        archi, orch = f.sessions()[-2:]
+        f.relire_le_registre()
+        self.assertEqual(f._equipes(), {})          # rien de connu : rien d'ecrit
+        self.statusline(os.getpid(), f.identifiant_de(archi), "sess-archi", depot)
+        f.relire_le_registre()
+        self.assertEqual(f._equipes(), {depot: {"Architecte": "sess-archi"}})
+        self.statusline(os.getpid() + 1, f.identifiant_de(orch), "sess-orch", depot)
+        f.relire_le_registre()
+        self.assertEqual(f._equipes(), {depot: {"Architecte": "sess-archi",
+                                                 "Orchestrateur": "sess-orch"}})
+
+    def test_reprendre_equipe_rouvre_ses_sessions_par_claude_r(self):
+        depot = self.depot()
+        f = self.fenetre(commande="claude -r",
+                         equipes=json.dumps({depot: {"Architecte": "sess-archi",
+                                                     "Orchestrateur": "sess-orch"}}))
+        f.demarrer()
+        f.montrees = []
+        f._se_montrer = lambda: f.montrees.append(True)
+        self.assertTrue(f.demande_du_menu("reprendre-equipe\t%s\n" % depot))
+        vues = f.sessions()[-2:]
+        self.assertEqual([v.envois for v in vues],
+                         [["clear; claude -r sess-archi\n"], ["clear; claude -r sess-orch\n"]])
+        self.assertEqual([f._titres[v] for v in vues],
+                         ["Architecte : SmartOS", "Orchestrateur : SmartOS"])
+        self.assertEqual([v.demarrages[0][1] for v in vues], [depot, depot])
+        self.assertEqual(f.montrees, [True])
+
+    def test_reprendre_equipe_saute_ce_qui_est_deja_ouvert(self):
+        """Ici (meme dock) comme ailleurs (instance vivante) : jamais deux `claude -r` sur
+        la meme conversation. Une equipe entierement ouverte reste un succes."""
+        depot = self.depot()
+        f = self.fenetre(commande="claude -r",
+                         equipes=json.dumps({depot: {"Architecte": "sess-archi",
+                                                     "Orchestrateur": "sess-orch"}}))
+        f.demarrer()
+        f.montrees = []
+        f._se_montrer = lambda: f.montrees.append(True)
+        self.statusline(os.getpid() + 1, "onglet-ailleurs", "sess-orch", depot)
+        self.assertTrue(f.demande_du_menu("reprendre-equipe\t%s\n" % depot))
+        self.assertEqual([v.envois for v in f.sessions()[1:]],
+                         [["clear; claude -r sess-archi\n"]])
+        archi = f.sessions()[-1]
+        self.statusline(os.getpid(), f.identifiant_de(archi), "sess-archi", depot)
+        f.relire_le_registre()
+        self.assertTrue(f.demande_du_menu("reprendre-equipe\t%s\n" % depot))
+        self.assertEqual(len(f.sessions()), 2)
+        self.assertEqual(f.montrees, [True, True])
+
+    def test_sans_equipe_memorisee_refus(self):
+        f = self.fenetre_du_menu()
+        self.assertFalse(f.demande_du_menu("reprendre-equipe\t%s\n" % self.depot()))
+        self.assertEqual(len(f.sessions()), 1)
+        self.assertEqual(f.montrees, [])
+
+    def test_nouvelle_equipe_remplace_l_ancienne_du_meme_depot_seulement(self):
+        depot = self.depot()
+        autre = self.depot("qtpy6")
+        f = self.fenetre(commande="claude -r",
+                         equipes=json.dumps({depot: {"Architecte": "vieille"},
+                                             autre: {"Architecte": "intacte"}}))
+        f.demarrer()
+        f._se_montrer = lambda: None
+        self.assertTrue(f.demande_du_menu("equipe\t%s\n" % depot))
+        self.assertEqual(f._equipes(), {autre: {"Architecte": "intacte"}})
+        archi = f.sessions()[-2]
+        self.statusline(os.getpid(), f.identifiant_de(archi), "neuve", depot)
+        f.relire_le_registre()
+        self.assertEqual(f._equipes(), {autre: {"Architecte": "intacte"},
+                                        depot: {"Architecte": "neuve"}})
+
+    def test_ligne_de_commande_sans_dock_qui_ecoute(self):
+        """`claude_dolphin.sh` lance le dock lui-meme avec la demande (pas de Konsole de
+        repli pour une equipe)."""
+        depot = self.depot()
+        self.assertEqual(demande_de_la_ligne_de_commande(["dock", "--equipe", depot]),
+                         (depot, "equipe\t%s\n" % depot))
+        self.assertEqual(demande_de_la_ligne_de_commande(["dock", "--reprendre-equipe", depot]),
+                         (depot, "reprendre-equipe\t%s\n" % depot))
+        self.assertEqual(demande_de_la_ligne_de_commande(["dock", depot]), (depot, None))
+        self.assertEqual(demande_de_la_ligne_de_commande(["dock"]), (None, None))
+
+    def test_equipes_illisibles_ignorees(self):
+        f = self.fenetre(commande="claude -r", equipes="pas du json")
+        f.demarrer()
+        self.assertEqual(f._equipes(), {})
+        self.assertFalse(f.demande_du_menu("reprendre-equipe\t%s\n" % self.depot()))
 
 
 class TestTitre(Banc):
