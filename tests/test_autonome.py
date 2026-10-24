@@ -408,6 +408,33 @@ class TestRendu(Banc):
         self.assertNotIn(P.COLOR_ACCENT_3, f._onglets.styleSheet())
         self.assertEqual(vue.liserets[-1], (None, False))
 
+    def test_onglet_actif_teint_eclairci_au_focus_et_coin_du_cadre(self):
+        """« l'onglet doit etre legerement eclairci de la meme maniere que la fenetre quand
+        c'est l'onglet actif, quelle que soit la couleur de fond » et « arrondi en haut a
+        gauche, si l'onglet n'est pas celui tout a gauche » (utilisateur, 24/10/2026). Le
+        dock teignait sans eclaircir, et gardait le coin carre."""
+        from spyder_claude import etat_instances
+        from spyder_konsole import konsole_view
+        f = self.fenetre_visible()
+        a, _b = f.ouvrir_session(), f.ouvrir_session()
+        f._onglets.setCurrentWidget(a)
+        f._etats[a] = "waiting"
+        f._appliquer_cadre(True)
+        barre = f._onglets.tabBar()
+        image = barre.grab().toImage()
+        cadre = barre.tabRect(0)
+        self.assertEqual(image.pixelColor(cadre.left() + 4, cadre.center().y()).name(),
+                         konsole_view.eclaircir(etat_instances.COULEURS["waiting"]))
+        # Non eclaircie : le conge l'eclaircit lui-meme au focus.
+        self.assertEqual(barre.property("smartos_fond_onglet"),
+                         etat_instances.COULEURS["waiting"])
+        carre = "border-top-left-radius: 0px"
+        self.assertIn(carre, f.centralWidget().styleSheet())
+        f._onglets.setCurrentIndex(1)
+        self.assertNotIn(carre, f.centralWidget().styleSheet())
+        barre.moveTab(1, 0)
+        self.assertIn(carre, f.centralWidget().styleSheet())
+
     def test_mosaique_un_seul_cadre_bleu_et_poignees_au_fond(self):
         from qdarkstyle.dark.palette import DarkPalette as P
         f = self.fenetre_visible()

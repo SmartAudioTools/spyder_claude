@@ -49,7 +49,7 @@ import warnings
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from qtpy.QtCore import QEvent, QPointF, Signal  # noqa: E402
+from qtpy.QtCore import QEvent, QPointF, Qt, Signal  # noqa: E402
 from qtpy.QtGui import QEnterEvent  # noqa: E402
 from qtpy.QtWidgets import QApplication, QTabBar, QVBoxLayout, QWidget  # noqa: E402
 
@@ -278,6 +278,87 @@ class TestListeDesSessions(unittest.TestCase):
         pixels = {image.pixelColor(haut_gauche.x() + x, haut_gauche.y() + y).name()
                   for x in range(croix.width()) for y in range(1, croix.height())}
         self.assertFalse(pixels & gris, pixels & gris)
+
+    def test_le_conge_prend_la_teinte_de_longlet_actif(self):
+        """« l'onglet doit etre legerement eclairci de la meme maniere que la fenetre quand
+        c'est l'onglet actif, quelle que soit la couleur de fond (defaut, rouge, vert) »
+        (utilisateur, 24/10/2026) : le conge du fork lit la teinte, non eclaircie, dans
+        'smartos_fond_onglet', et l'eclaircit lui-meme au focus."""
+        attente = self._ouvrir("a")
+        self._ouvrir("b")
+        self.p.resize(600, 300)
+        self.p.show()
+        self.p._etats[attente] = "waiting"
+        barre = self.p._onglets.tabBar()
+        barre.grab()
+        self.assertEqual(barre.property("smartos_fond_onglet"),
+                         etat_instances.COULEURS["waiting"])
+        self.p._onglets.setCurrentIndex(1)
+        barre.grab()
+        self.assertEqual(barre.property("smartos_fond_onglet"), "")
+
+    def test_coin_haut_gauche_arrondi_hors_du_premier_onglet(self):
+        """« le contour de la fenetre de l'onglet doit etre arrondi en haut a gauche, si
+        l'onglet n'est pas celui tout a gauche » (utilisateur, 24/10/2026) — y compris
+        quand c'est l'onglet actif qu'on deplace (tabMoved, pas currentChanged)."""
+        carre = "border-top-left-radius: 0px"
+        self._ouvrir("a")
+        self._ouvrir("b")
+        self.p._onglets.setCurrentIndex(0)
+        self.assertIn(carre, self.p.styleSheet())
+        self.p._onglets.setCurrentIndex(1)
+        self.assertNotIn(carre, self.p.styleSheet())
+        self.p._onglets.tabBar().moveTab(1, 0)
+        self.assertIn(carre, self.p.styleSheet())
+        self.p._onglets.tabBar().moveTab(0, 1)
+        self.assertNotIn(carre, self.p.styleSheet())
+
+    def test_longlet_tire_garde_sa_teinte_sans_fantome(self):
+        """« les arrondis exterieurs doivent suivre l'onglet pendant le deplacement »
+        (24/10/2026). Pendant le glisser, Qt peint l'onglet actif dans un widget a part :
+        la teinte doit y etre, et plus a sa place d'origine dans la barre."""
+        from qtpy.QtCore import QPoint
+        from qtpy.QtGui import QColor, QMouseEvent
+        from qtpy.QtTest import QTest
+        from spyder_konsole import konsole_view
+        attente = self._ouvrir("a")
+        self._ouvrir("b")
+        self._ouvrir("c")
+        self.p.resize(600, 300)
+        self.p.show()
+        self.p._etats[attente] = "waiting"
+        self.p._appliquer_cadre(focus=False)
+        barre = self.p._onglets.tabBar()
+        QApplication.processEvents()
+        cadre = barre.tabRect(0)
+        depart = QPoint(cadre.left() + 6, cadre.center().y())
+        QTest.mousePress(barre, Qt.LeftButton, Qt.NoModifier, depart)
+        # Pas `QTest.mouseMove` : sous Qt5 il deplace le curseur sans rien envoyer au widget
+        # (cf. test_mosaique).
+        for pas in range(1, 9):
+            point = depart + QPoint(5 * pas, 0)
+            APP.sendEvent(barre, QMouseEvent(QEvent.MouseMove, QPointF(point),
+                                             QPointF(barre.mapToGlobal(point)),
+                                             Qt.NoButton, Qt.LeftButton, Qt.NoModifier))
+        QApplication.processEvents()
+        # La pression a pu donner le clavier au panneau : l'onglet actif est alors eclairci.
+        teinte = QColor(etat_instances.COULEURS["waiting"])
+        teinte = (konsole_view.eclaircir(teinte) if self.p._au_focus else teinte.name())
+        try:
+            # Le QMovableTabWidget prive de Qt : sans meta-objet propre (cf. teinte_onglets).
+            tire = next((enfant for enfant in barre.children()
+                         if isinstance(enfant, QWidget) and enfant.isVisible()
+                         and enfant.metaObject().className() == "QWidget"), None)
+            self.assertIsNotNone(tire, "le glisser n'a pas demarre")
+            image = tire.grab().toImage()
+            self.assertEqual(image.pixelColor(image.width() // 4,
+                                              image.height() // 2).name(), teinte)
+            image = barre.grab().toImage()
+            self.assertNotEqual(image.pixelColor(cadre.left() + 4,
+                                                 cadre.center().y()).name(), teinte)
+        finally:
+            QTest.mouseRelease(barre, Qt.LeftButton, Qt.NoModifier,
+                               depart + QPoint(40, 0))
 
     def test_oublier_purge_la_vue(self):
         vue = self._ouvrir()

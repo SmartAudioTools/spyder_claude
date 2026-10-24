@@ -49,11 +49,10 @@ import uuid
 
 import qtawesome as qta
 from qtpy.QtCore import QEvent, QProcess, QSettings, QSize, Qt, QTimer
-from qtpy.QtGui import QBitmap, QColor, QImage, QPainter, QRegion
+from qtpy.QtGui import QPainter
 from qtpy.QtNetwork import QLocalServer, QLocalSocket
 from qtpy.QtWidgets import (QApplication, QGraphicsOpacityEffect, QHBoxLayout, QLabel,
-                            QMainWindow, QPushButton, QSizePolicy, QStyle,
-                            QStyleOptionTab, QStylePainter, QTabBar, QTabWidget,
+                            QMainWindow, QPushButton, QSizePolicy, QTabBar, QTabWidget,
                             QToolButton, QVBoxLayout, QWidget)
 
 from spyder_claude import etat_instances, usage
@@ -61,6 +60,7 @@ from spyder_claude.compteurs import BandeauUsage
 from spyder_claude.defilement import BarreDefilementEmulee
 from spyder_claude.mosaique import MARGE_CONGE, Cellule, Mosaique
 from spyder_claude.spyder.onglet_compteur import CoinDOnglet
+from spyder_claude.teinte_onglets import TeinteDesOnglets
 from spyder_konsole import konsole_view
 
 try:   # les controles de fenetre de SmartPythonEditor ; absents : barre de titre du systeme
@@ -413,7 +413,16 @@ class FenetreClaude(QMainWindow):
         self._onglets.setDocumentMode(True)
         self._onglets.setMovable(True)
         self._onglets.tabBar().tabMoved.connect(self._suivre_l_ordre_des_onglets)
-        self._onglets.tabBar().installEventFilter(self)   # cf. `_teinter_les_onglets`
+        # Le coin du cadre suit le rang de l'onglet actif (cf. main_widget).
+        for signal in (self._onglets.currentChanged, self._onglets.tabBar().tabMoved):
+            signal.connect(lambda *_ignore: self._appliquer_cadre(
+                bool(self._onglets.tabBar().property("smartos_focus"))))
+        barre = self._onglets.tabBar()
+        self._teinte = TeinteDesOnglets(
+            barre,
+            lambda index: etat_instances.COULEURS.get(
+                self._etats.get(self._onglets.widget(index))),
+            lambda: bool(barre.property("smartos_focus")))
         # Les titres en entier tant qu'ils tiennent tous ; au-dela, Qt les raccourcit tous
         # par la gauche plutot que de faire defiler.
         self._onglets.tabBar().setElideMode(Qt.ElideLeft)
@@ -482,7 +491,7 @@ class FenetreClaude(QMainWindow):
         self.setCentralWidget(centre)
 
         # Fond des onglets inactifs : alpha 2, pas transparent (cf. main_widget, meme
-        # attribut) — `_teinter_les_onglets` reconnait l'onglet a la couleur de son centre.
+        # attribut) — `teinte_onglets` reconnait l'onglet a la couleur de son centre.
         self._feuille_onglets = (
             (theme["feuille_onglets"] if theme else "")
             + "QTabBar#pane-tabbar::tab:!selected { background: rgba(0, 0, 0, 2); }"
@@ -1206,7 +1215,8 @@ class FenetreClaude(QMainWindow):
         palette = self._theme["palette"]
         couleur = palette.COLOR_ACCENT_3 if focus else palette.COLOR_BACKGROUND_4
         # Sur le widget central : elle descend aux vues, en onglets comme en mosaique.
-        feuille = self._feuille_cadre(couleur)
+        feuille = self._feuille_cadre(couleur,
+                                      coin_carre=self._onglets.currentIndex() <= 0)
         epais = (f"background-color: {konsole_view.eclaircir(self._theme['fond'])};"
                  if focus else "")
         onglets = (self._feuille_onglets
@@ -1231,12 +1241,14 @@ class FenetreClaude(QMainWindow):
         if self._en_mosaique:
             self._repartir_les_cadres()
 
-    def _feuille_cadre(self, couleur):
-        """Coin haut gauche carre : l'onglet actif s'y raccorde (cf. main_widget)."""
+    def _feuille_cadre(self, couleur, coin_carre=True):
+        """Coin haut gauche carre quand l'onglet actif s'y raccorde, le premier ; arrondi
+        sinon (cf. main_widget._appliquer_cadre). Toujours carre en mosaique."""
         return ("QFrame#terminal_smartos {"
                 f" border: 1px solid {couleur};"
                 f" border-radius: {self._theme['palette'].SIZE_BORDER_RADIUS};"
-                " border-top-left-radius: 0px; }")
+                + (" border-top-left-radius: 0px;" if coin_carre else "")
+                + " }")
 
     def _suivre_le_focus(self, _ancien, nouveau):
         self._appliquer_cadre(bool(nouveau is not None and self.isAncestorOf(nouveau)))
@@ -1463,45 +1475,6 @@ class FenetreClaude(QMainWindow):
             vue.envoyer(texte)
         if valider:
             self._differer(vue, self.PAUSE_VALIDATION_DICTEE, lambda: vue.envoyer("\r"))
-
-    # ------------------------------------------------------------------ teinte
-
-    def eventFilter(self, objet, evenement):  # noqa: N802 - API Qt
-        if evenement.type() == QEvent.Paint and isinstance(objet, QTabBar):
-            type(objet).paintEvent(objet, evenement)
-            self._teinter_les_onglets(objet)
-            return True
-        return super().eventFilter(objet, evenement)
-
-    def _teinter_les_onglets(self, barre):
-        """La couleur d'etat sur le FOND de chaque onglet (cf. main_widget, meme nom)."""
-        peintre = None
-        for index in range(barre.count()):
-            couleur = etat_instances.COULEURS.get(
-                self._etats.get(self._onglets.widget(index)))
-            if not couleur:
-                continue
-            if peintre is None:
-                peintre = QStylePainter(barre)
-            option = QStyleOptionTab()
-            barre.initStyleOption(option, index)
-            cadre = option.rect
-            forme = QImage(cadre.size(), QImage.Format_ARGB32_Premultiplied)
-            forme.fill(Qt.transparent)
-            peintre_forme = QPainter(forme)
-            peintre_forme.translate(-cadre.topLeft())
-            barre.style().drawControl(QStyle.CE_TabBarTabShape, option, peintre_forme,
-                                      barre)
-            peintre_forme.end()
-            fond = forme.pixel(forme.width() // 2, forme.height() // 2)
-            masque = QBitmap.fromImage(forme.createMaskFromColor(fond, Qt.MaskOutColor))
-            peintre.save()
-            peintre.setClipRegion(QRegion(masque).translated(cadre.topLeft()))
-            peintre.fillRect(cadre, QColor(couleur))
-            peintre.restore()
-            peintre.drawControl(QStyle.CE_TabBarTabLabel, option)
-        if peintre is not None:
-            peintre.end()
 
 
 def dossier_de_la_ligne_de_commande(argv):

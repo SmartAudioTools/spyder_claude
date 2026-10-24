@@ -66,10 +66,8 @@ import uuid
 import qtawesome as qta
 
 from qtpy.QtCore import QEvent, Qt, QTimer, Signal
-from qtpy.QtGui import QBitmap, QColor, QImage, QPainter, QRegion
 from qtpy.QtWidgets import (QApplication, QGraphicsOpacityEffect, QLabel, QPushButton,
-                            QSizePolicy, QStyle, QStyleOptionTab, QStylePainter, QTabBar,
-                            QVBoxLayout, QWidget)
+                            QSizePolicy, QTabBar, QVBoxLayout, QWidget)
 
 from spyder.widgets.tabs import Tabs
 
@@ -83,6 +81,7 @@ from spyder_claude.compteurs import BandeauUsage
 from spyder_claude.defilement import BarreDefilementEmulee
 from spyder_claude.mosaique import Mosaique
 from spyder_claude.spyder.onglet_compteur import CoinDOnglet
+from spyder_claude.teinte_onglets import TeinteDesOnglets
 from spyder_claude.spyder.translations import _
 
 
@@ -192,13 +191,21 @@ class PanneauClaude(PluginMainWidget):
         self._onglets.setDocumentMode(True)
         self._onglets.setMovable(True)
         self._onglets.tabBar().tabMoved.connect(self._suivre_l_ordre_des_onglets)
+        # Les deux : deplacer l'onglet actif ne change pas l'onglet courant (pas de
+        # currentChanged), seulement son rang — celui qui decide du coin du cadre.
+        for signal in (self._onglets.currentChanged, self._onglets.tabBar().tabMoved):
+            signal.connect(lambda *_ignore: self._appliquer_cadre(self._au_focus))
         # set_close_function : l'API de Spyder, celle qu'utilise la console. Elle fait
         # setTabsClosable(True) et branche tabCloseRequested — un seul appel au lieu de
         # deux, et surtout le meme chemin que le panneau de reference.
         self._onglets.set_close_function(self._fermer_onglet)
-        self._onglets.tabBar().installEventFilter(self)  # cf. `_teinter_les_onglets`
+        self._teinte = TeinteDesOnglets(
+            self._onglets.tabBar(),
+            lambda index: etat_instances.COULEURS.get(
+                self._etats.get(self._onglets.widget(index))),
+            lambda: self._au_focus)
         # Fond des onglets inactifs : transparent pour l'oeil, mais pas pour le masque de
-        # `_teinter_les_onglets`, qui le reconnait a la couleur du centre de l'onglet. Un
+        # `teinte_onglets`, qui le reconnait a la couleur du centre de l'onglet. Un
         # fond VRAIMENT transparent (celui du fork depuis le 11/10/2026) se confond avec les
         # marges de l'onglet : la teinte les debordait et couvrait le cadre du volet.
         # Alpha 2 sur 255, pas 1 : Qt lit un alpha <= 1 comme une FRACTION, et
@@ -320,7 +327,7 @@ class PanneauClaude(PluginMainWidget):
         Le `padding` nous est propre : le terminal est OPAQUE et peindrait par-dessus les
         coins arrondis, comme l'ecran de jeu de Pyxel.
         """
-        self._au_focus = focus                  # lu par `_teinter_les_onglets`
+        self._au_focus = focus                  # lu par `teinte_onglets`
         try:
             from spyder.utils.palette import SpyderPalette
             from spyder.utils.stylesheet import smartos_editor_background
@@ -339,9 +346,14 @@ class PanneauClaude(PluginMainWidget):
         feuille = ("QFrame#terminal_smartos {"
                    f" border: 1px solid {couleur};"
                    f" border-radius: {SpyderPalette.SIZE_BORDER_RADIUS};"
-                   # Coin haut gauche carre : l'onglet actif s'ouvre sur le volet (TABS_PATCH
-                   # du fork, 11/10/2026) ; un coin arrondi laissait une encoche au raccord.
-                   " border-top-left-radius: 0px; }")
+                   # Coin haut gauche carre quand l'onglet actif est le premier : il s'ouvre
+                   # sur le volet (TABS_PATCH du fork, 11/10/2026) et un coin arrondi
+                   # laissait une encoche au raccord. Arrondi sinon (demande du 24/10/2026 :
+                   # « arrondi en haut a gauche, si l'onglet n'est pas celui tout a gauche ») ;
+                   # le changement d'onglet reapplique ce cadre quand l'onglet actif bouge.
+                   + (" border-top-left-radius: 0px;"
+                      if self._onglets.currentIndex() <= 0 else "")
+                   + " }")
         # L'onglet actif prend la couleur du cadre qu'il prolonge. Sur le conteneur
         # d'onglets, pas sur le panneau : la propre feuille du conteneur l'emporterait.
         # Au focus, son fond s'eclaircit tres legerement, comme celui du terminal
@@ -543,64 +555,14 @@ class PanneauClaude(PluginMainWidget):
         d'onglets — devenu inutile le jour ou ce bouton est passe dans le coin : Qt l'y
         dispose lui-meme. Le filtre n'est donc plus installe QUE sur le burger (les deux
         poses sur les onglets ont ete retirees le 31/07/2026, sans effet mesurable). Il y est
-        revenu le 10/10/2026 pour une autre raison : la couleur d'etat des onglets.
+        revenu le 10/10/2026 pour la couleur d'etat des onglets, qui a son propre filtre
+        depuis le 24/10/2026 (`teinte_onglets`, commun au dock).
         """
         if (objet is getattr(self, "_options_button", None)
                 and evenement.type() == QEvent.Show):
             objet.setVisible(False)
             return True
-        if evenement.type() == QEvent.Paint and isinstance(objet, QTabBar):
-            type(objet).paintEvent(objet, evenement)
-            self._teinter_les_onglets(objet)
-            return True
         return super().eventFilter(objet, evenement)
-
-    def _teinter_les_onglets(self, barre):
-        """Peint la couleur d'etat de chaque session sur le FOND de son onglet.
-
-        Demande de l'utilisateur, 10/10/2026 : « la coloration de la console ne se
-        repercute pas sur l'onglet en mode onglets, or il le faudrait » — la mosaique la
-        portait deja sur le titre de cellule.
-
-        Qt n'a pas de fond par onglet, et la feuille de style de Spyder (qdarkstyle) peint
-        le fond, l'arrondi et le soulignement de l'onglet actif sans exposer leur geometrie.
-        D'ou : la barre se peint normalement, puis, pour chaque onglet colore, sa FORME
-        seule (`CE_TabBarTabShape`) est rendue a part, les pixels de la couleur de son
-        centre — le fond — deviennent un masque, la couleur d'etat est peinte dans ce
-        masque, et le libelle (`CE_TabBarTabLabel`) est redessine par-dessus. Arrondis,
-        bordure de survol et soulignement bleu restent ceux du style. Ecarte : une feuille
-        de style rendant les fonds transparents pour peindre dessous — elle obligeait a
-        recopier les couleurs de fond de qdarkstyle et la geometrie de ses marges.
-        """
-        peintre = None
-        for index in range(barre.count()):
-            couleur = etat_instances.COULEURS.get(
-                self._etats.get(self._onglets.widget(index)))
-            if not couleur:
-                continue
-            if self._au_focus and index == barre.currentIndex():
-                couleur = konsole_view.eclaircir(couleur)   # comme le fond du terminal
-            if peintre is None:
-                peintre = QStylePainter(barre)
-            option = QStyleOptionTab()
-            barre.initStyleOption(option, index)
-            cadre = option.rect
-            forme = QImage(cadre.size(), QImage.Format_ARGB32_Premultiplied)
-            forme.fill(Qt.transparent)
-            peintre_forme = QPainter(forme)
-            peintre_forme.translate(-cadre.topLeft())
-            barre.style().drawControl(QStyle.CE_TabBarTabShape, option, peintre_forme,
-                                      barre)
-            peintre_forme.end()
-            fond = forme.pixel(forme.width() // 2, forme.height() // 2)
-            masque = QBitmap.fromImage(forme.createMaskFromColor(fond, Qt.MaskOutColor))
-            peintre.save()
-            peintre.setClipRegion(QRegion(masque).translated(cadre.topLeft()))
-            peintre.fillRect(cadre, QColor(couleur))
-            peintre.restore()
-            peintre.drawControl(QStyle.CE_TabBarTabLabel, option)
-        if peintre is not None:
-            peintre.end()
 
     def _coin_des_onglets(self):
         """Le widget de coin haut-droit de la barre d'onglets, ou None."""
