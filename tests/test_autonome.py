@@ -662,6 +662,22 @@ class TestTitre(Banc):
         self.assertEqual(f._onglets.tabBar().elideMode(), Qt.ElideLeft)
         self.assertFalse(f._onglets.usesScrollButtons())
 
+    def test_le_sujet_annonce_l_emporte_sur_le_titre_de_claude(self):
+        f = self.fenetre()
+        f.demarrer()
+        vue = f.sessions()[0]
+        self.statusline(os.getpid(), f.identifiant_de(vue), "sess-sujet")
+        f._titre_change(vue, "◐ Claude Code")
+        self.assertEqual(f._onglets.tabText(0), "Claude Code")
+        with open(os.path.join(self.temporaire, "claude-windows", "sujet-sess-sujet"), "w",
+                  encoding="utf-8") as fichier:
+            fichier.write("Worker 35 — titre d'onglet\nligne ignoree\n")
+        f.relire_le_registre()
+        self.assertEqual(f._onglets.tabText(0), "Worker 35 — titre d'onglet")
+        f._titre_change(vue, "◑ Claude Code")   # l'image suivante du temoin anime
+        self.assertEqual(f._onglets.tabText(0), "Worker 35 — titre d'onglet")
+        self.assertEqual(f._onglets.tabToolTip(0), "Worker 35 — titre d'onglet")
+
     def test_etat_vocal_lu_dans_le_registre(self):
         f = self.fenetre()
         self.assertEqual(f.etat_vocal(), {"parole": False, "dictee": False})

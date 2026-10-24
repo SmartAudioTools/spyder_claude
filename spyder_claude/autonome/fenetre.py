@@ -374,6 +374,7 @@ class FenetreClaude(QMainWindow):
 
         self._vues = []
         self._titres = {}
+        self._sujets = {}
         self._identifiants = {}
         self._identifiants_fermes = set()
         self._etats = {}
@@ -1038,7 +1039,11 @@ class FenetreClaude(QMainWindow):
         if not texte:
             return
         self._suivre_titre(vue, texte)
-        texte = self._sans_temoin(texte)
+        self._afficher_titre(vue, self._sujets.get(vue) or self._sans_temoin(texte))
+
+    def _afficher_titre(self, vue, texte):
+        """Le sujet annonce par la session (`usage.sujets_par_onglet`) l'emporte sur le titre
+        de Claude Code, qui reecrit le sien a chaque image de son temoin anime."""
         self._titres[vue] = texte
         index = self._onglets.indexOf(vue)
         if index >= 0:
@@ -1053,6 +1058,7 @@ class FenetreClaude(QMainWindow):
         if vue in self._vues:
             self._vues.remove(vue)
         self._titres.pop(vue, None)
+        self._sujets.pop(vue, None)
         identifiant = self._identifiants.pop(vue, None)
         if identifiant:
             self._identifiants_fermes.add(identifiant)
@@ -1310,6 +1316,13 @@ class FenetreClaude(QMainWindow):
             self._bandeau.poser_fenetres(fenetres)
 
         self._memoriser_les_sessions()
+
+        sujets = usage.sujets_par_onglet()
+        for vue, identifiant in list(self._identifiants.items()):
+            sujet = sujets.get(identifiant)
+            if sujet and sujet != self._sujets.get(vue):
+                self._sujets[vue] = sujet
+                self._afficher_titre(vue, sujet)
 
         vitesses = self._lisseur.vitesses()
         for vue, identifiant in list(self._identifiants.items()):

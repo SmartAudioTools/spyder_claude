@@ -217,6 +217,39 @@ def sessions_par_onglet(dossier=None):
     return resultat
 
 
+#: Prefixe du sujet annonce par une session (claude-sujet.sh), suivi de son session_id.
+PREFIXE_SUJET = "sujet-"
+
+#: Au-dela, le sujet est tronque : un onglet ne l'afficherait pas, l'infobulle si.
+SUJET_MAX = 120
+
+
+def sujets_par_onglet(dossier=None):
+    """{identifiant d'onglet (CU_PANE): sujet} des sessions qui ont annonce le leur.
+
+    `claude-sujet.sh` ecrit une ligne dans `sujet-<session_id>` (demande de l'utilisateur,
+    24/10/2026 : « les workers doivent contenir dans le titre d'onglet ce sur quoi ils sont
+    en train de travailler »). Par fichier et non par OSC 2 sur le pty : Claude Code
+    reecrit son propre titre a chaque image de son temoin anime, et le dock a besoin de ce
+    titre-la pour suivre l'activite (cf. FenetreClaude._suivre_titre). Une ligne, lue comme
+    du texte, jamais executee.
+    """
+    dossier = dossier or etat_instances.dossier_etat()
+    resultat = {}
+    for pane, (session, _) in sessions_par_onglet(dossier).items():
+        if os.sep in session or session.startswith("."):
+            continue
+        try:
+            with open(os.path.join(dossier, PREFIXE_SUJET + session),
+                      encoding="utf-8", errors="replace") as fichier:
+                sujet = fichier.readline().strip()
+        except OSError:
+            continue
+        if sujet:
+            resultat[pane] = sujet[:SUJET_MAX]
+    return resultat
+
+
 def sessions_vivantes(dossier=None):
     """Les session_id portes par une instance Claude VIVANTE, d'ou qu'elle soit lancee.
 
