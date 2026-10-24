@@ -12,7 +12,10 @@ la regle mesuree par deux sondes du 19/10/2026 (outils_smartos/sonde_molette.py)
 
   - un cran = une ligne, A CONDITION que deux crans soient espaces d'au moins 50 ms : en
     deca (0 a 30 ms mesures), Claude ACCELERE — 12 crans d'un seul jet font 26 lignes
-    (sonde --cadence). La barre envoie donc ses crans un par un, au rythme INTERVALLE ;
+    (sonde --cadence). Mais UNE ecriture de 1 a 4 crans fait exactement autant de lignes (6
+    en font 8), et des ecritures de 3 crans espacees de 60 ms s'additionnent exactement (a
+    30 ms, non) : sonde_echanges du 24/10/2026. La barre envoie donc ses crans par jets de
+    JET au plus, au rythme INTERVALLE ;
   - un cran de sens oppose au cran precedent est PERDU — si ce precedent a agi. Une
     sequence haut, bas, haut fait : +1, 0 (perdu), +1 (le bas n'ayant pas agi, il ne
     compte pas comme precedent agissant) ;
@@ -99,8 +102,10 @@ def suivre(avant, apres):
     (question en tete, pied) vote 0 ; elle ne doit pas emporter un vrai defilement, d'ou :
     le meilleur k non nul gagne s'il a PREUVES votes et au moins le double du suivant non nul.
     Les lignes uniques DISPARUES trahissent un saut que les epinglees masqueraient (redessin,
-    plus d'un ecran d'un coup) : un decalage k en fait sortir k par le haut, plus la ligne en
-    cours d'ecriture ; au-dela de k + 2, rien n'est cru.
+    plus d'un ecran d'un coup) : un decalage k en fait sortir |k| par un bord, plus la ligne
+    en cours d'ecriture ; au-dela de |k| + 2, rien n'est cru. Plus de lignes restees en place
+    que l'epinglage n'en compte, et dominantes : rien n'a defile, les disparues ont ete
+    reecrites sur place (zone de saisie, indicateur : 3 lignes, sonde_echanges du 24/10/2026).
     Rend (k, votes), k None si l'ecran ne permet pas de conclure.
     """
     if avant == apres:
@@ -111,11 +116,13 @@ def suivre(avant, apres):
                     if uniques[0][l] == 1 and l in rang)
     disparues = sum(1 for l in avant if uniques[0][l] == 1 and l not in rang)
     non_nuls = sorted(((n, k) for k, n in votes.items() if k), reverse=True)
+    if votes[0] > EPINGLEES and votes[0] >= 2 * (non_nuls[0][0] if non_nuls else 0):
+        return 0, dict(votes)
     k, n = (non_nuls[0][1], non_nuls[0][0]) if non_nuls else (0, votes[0])
     second = non_nuls[1][0] if len(non_nuls) > 1 else 0
     # deux voix suffisent sans concurrente : le debut d'une reponse n'a guere de lignes uniques
     # (accueil, question, indicateur) et c'est la que la 2e sonde perdait 10 lignes
-    if (n >= PREUVES and n >= 2 * second or n >= 2 and not second) and disparues <= max(k, 0) + 2:
+    if (n >= PREUVES and n >= 2 * second or n >= 2 and not second) and disparues <= abs(k) + 2:
         return k, dict(votes)
     return None, dict(votes)
 
@@ -177,8 +184,11 @@ class BarreDefilementEmulee(QWidget):
     #: Au-dela de l'etendue connue, on avance par paquets et on regarde l'ecran apres
     #: chacun : c'est ce qui detecte le haut, a un paquet pres.
     PAQUET = 5
-    #: Ecart entre deux crans (ms) : 50 mesure sans acceleration, 30 accelere deja.
-    INTERVALLE = 50
+    #: Ecart entre deux envois de crans (ms) : 60 mesure sans acceleration, 30 accelere deja.
+    INTERVALLE = 60
+    #: Crans d'une seule ecriture : exacts jusqu'a 4 (sonde_echanges, 24/10/2026) ; 3, les
+    #: lignes d'un cran rapide (ISOLE), arrivent ainsi d'un coup.
+    JET = 3
     #: L'ecran est relu quand la sortie s'est tue CALME ms (plafond : PLAFOND ms).
     CALME = 120
     PLAFOND = 800
@@ -254,10 +264,14 @@ class BarreDefilementEmulee(QWidget):
             if touche in (Qt.Key_Return, Qt.Key_Enter) and not mods & Qt.ShiftModifier:
                 # Une question part : on la suit EN BAS, de facon exacte, plutot que de
                 # supposer ce que Claude fait de la vue a l'envoi. Son echo arrive pendant ce
-                # saut, que le suivi ne mesure pas (cf. _suivre) : le haut n'est plus connu.
+                # saut : le suivi le mesure s'il reste du contenu commun (moins d'un ecran,
+                # cf. _suivre), au-dela le haut n'est plus connu (sonde_echanges, 24/10/2026 :
+                # 3 pertes sur 6 echanges venaient d'ici, T restait pourtant exact).
                 if self.modele.d:
+                    loin = self.modele.d >= self._vue.lignes_ecran()
                     self._en_bas()
-                    self.modele.haut_connu = False
+                    if loin:
+                        self.modele.haut_connu = False
             elif touche == Qt.Key_O and mods & Qt.ControlModifier:
                 # Ctrl+O bascule la transcription : autre contenu, autre etendue.
                 self.modele.reinitialiser()
@@ -307,7 +321,7 @@ class BarreDefilementEmulee(QWidget):
         k = suivre(reference[0], ecran)[0]
         if k is not None:
             self.modele.grandi(k + d - reference[1])
-        elif d == reference[1]:
+        elif abs(d - reference[1]) < self._vue.lignes_ecran():
             self.modele.haut_connu = False
         self.update()
 
@@ -365,7 +379,7 @@ class BarreDefilementEmulee(QWidget):
         self.update()
 
     def _avancer(self):
-        """Un cran au plus par appel ; le suivant attend INTERVALLE ms (sinon Claude accelere)."""
+        """Un envoi au plus par appel (JET crans) ; le suivant attend INTERVALLE ms (sinon Claude accelere)."""
         modele = self.modele
         if self._cible == 0 and (modele.d or self._verification):
             self._en_bas()              # exact, meme si un paquet ou une page etait en cours
@@ -377,8 +391,9 @@ class BarreDefilementEmulee(QWidget):
         if self._paquet:
             d_avant, avant, restants = self._paquet
             if restants:
-                self._paquet = (d_avant, avant, restants - 1)
-                self._cran(1)
+                jet = min(restants, self.JET)
+                self._paquet = (d_avant, avant, restants - jet)
+                self._cran(1, jet)
             else:                       # paquet parti : relire l'ecran une fois la sortie tue
                 self._paquet = None
                 self._verifier_plus_tard(d_avant, avant)
@@ -414,7 +429,10 @@ class BarreDefilementEmulee(QWidget):
             self._cadence.start()
             self.update()
         elif ecart:
-            self._cran(sens)
+            crans = min(abs(ecart), self.JET)
+            if sens > 0 and not modele.haut_connu:
+                crans = min(crans, modele.T - modele.d)     # au-dela de T, rien n'est relu
+            self._cran(sens, crans)
 
     def _verifier_plus_tard(self, d_avant, avant, etalonnage=False):
         self._verification = (d_avant, avant, etalonnage)
@@ -422,10 +440,10 @@ class BarreDefilementEmulee(QWidget):
         self._plafond.start()
         self.update()
 
-    def _cran(self, sens):
+    def _cran(self, sens, crans=1):
         self._occupe.start()
-        self._vue.envoyer_molette(sens)
-        self.modele.envoyes(1, sens)
+        self._vue.envoyer_molette(sens * crans)
+        self.modele.envoyes(crans, sens)
         self._cadence.start()
         self.update()
 

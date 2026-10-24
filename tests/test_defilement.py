@@ -93,8 +93,8 @@ class FauxClaude(QWidget):
 
     def envoyer_molette(self, crans):
         sens = 1 if crans > 0 else -1
-        for _ in range(abs(crans)):
-            self.molette(sens)
+        for i in range(abs(crans)):     # d'une ecriture : exact jusqu'a 4 (6 font 8)
+            self.molette(sens, 2 if i >= 4 else 1, premier=i == 0)
         self.sig_sortie.emit()
 
     # -- la regle mesuree
@@ -106,7 +106,7 @@ class FauxClaude(QWidget):
             self.ctrl_fin -= 1
         self._annulable = (0, 0)
 
-    def molette(self, sens):
+    def molette(self, sens, pas=1, premier=True):
         self._annuler_ctrl_fin()
         if self._precedent == -sens:
             self._precedent = 0                # perdu, et ne compte pas comme precedent
@@ -115,7 +115,8 @@ class FauxClaude(QWidget):
         self._precedent = sens
         maintenant, precedent = time.monotonic(), self._instant
         self._instant = maintenant
-        pas = 2 if maintenant - precedent < 0.04 else 1     # acceleration (sonde --cadence)
+        if premier and maintenant - precedent < 0.04:       # acceleration (sonde --cadence)
+            pas = 2
         self.p = min(max(0, self.p + sens * pas), self.haut)
 
     def ecrire(self, n):
@@ -160,6 +161,11 @@ class TestSuivre(unittest.TestCase):
         a, b = ecran(50), ecran(50)
         b[20] = b[20] + " suite"
         assert_k(a, b, 0)
+        # sonde_echanges, 24/10/2026 : notre remontee (k negatif) et 3 lignes reecrites sur place
+        assert_k(ecran(53), ecran(50), -3)
+        b = ecran(50)
+        b[18:21] = ["saisie 1", "saisie 2", "saisie 3"]
+        assert_k(ecran(50), b, 0)
         # repetitions : les lignes vides et les barrieres ne votent pas
         texte[40:60] = ["", "```"] * 10
         assert_k(ecran(70), ecran(72), 2)
@@ -252,6 +258,24 @@ class TestBarre(unittest.TestCase):
         attendu = 2 + QApplication.wheelScrollLines()
         self.assertEqual((barre.modele.d, claude.p), (attendu, attendu))
 
+    def test_un_cran_rapide_arrive_d_un_coup(self):
+        """« le defilement rapide de 3 lignes par 3 lignes ne semble pas fonctionner »
+        (24/10/2026) : les 3 lignes partaient une a une, a 50 ms d'ecart."""
+        claude, barre = self.connaitre_le_haut(touche=20)    # sans page : la cible est plus pres
+        envois = []
+        envoyer = claude.envoyer_molette
+        claude.envoyer_molette = lambda crans: (envois.append(crans), envoyer(crans))
+        barre.aller_a(7)
+        attendre(barre)
+        self.assertEqual((envois, barre.modele.d, claude.p), ([3, 3, 1], 7, 7))
+        claude, barre = self.monter()   # zone inconnue : paquets de PAQUET, relus apres chacun
+        envois = []
+        envoyer = claude.envoyer_molette
+        claude.envoyer_molette = lambda crans: (envois.append(crans), envoyer(crans))
+        barre.aller_a(7)
+        attendre(barre)
+        self.assertEqual((envois, barre.modele.d, claude.p), ([3, 2, 2], 7, 7))
+
     def test_un_jet_de_crans_accelere(self):
         """Le faux Claude doit voir le defaut que l'espacement corrige, sinon il ne prouve rien."""
         claude = FauxClaude(60)
@@ -274,6 +298,17 @@ class TestBarre(unittest.TestCase):
         barre.aller_a(claude.haut - 5)    # et la suite repart juste, inversion comprise
         attendre(barre)
         self.assertEqual((barre.modele.d, claude.p), (claude.haut - 5,) * 2)
+
+    def test_les_jets_ne_franchissent_pas_un_haut_suppose(self):
+        """« la hauteur totale est tres vite perdue » (24/10/2026) : T provisoire egal au vrai
+        haut, T - d non multiple de JET ; un jet qui franchit T sans relecture comptait 1 ou 2
+        lignes que Claude n'a pas faites (sonde_echanges, ecart -1/-2 en jets de 3 seulement)."""
+        claude, barre = self.monter(contenu=32)
+        barre.modele.T, barre.modele.haut_connu = claude.haut, False
+        barre.aller_a(1000)
+        attendre(barre, plafond=30)
+        self.assertTrue(barre.modele.haut_connu)
+        self.assertEqual((barre.modele.d, barre.modele.T, claude.p), (claude.haut,) * 3)
 
     def test_les_sauts_lointains_passent_par_les_pages(self):
         claude, barre = self.monter(contenu=300)
@@ -315,8 +350,8 @@ class TestBarre(unittest.TestCase):
             QCoreApplication.processEvents()
             time.sleep(0.01)
 
-    def connaitre_le_haut(self, contenu=60):
-        claude, barre = self.monter(contenu=contenu)
+    def connaitre_le_haut(self, contenu=60, **options):
+        claude, barre = self.monter(contenu=contenu, **options)
         barre.aller_a(1000)
         attendre(barre)
         barre.aller_a(0)
@@ -352,6 +387,29 @@ class TestBarre(unittest.TestCase):
         claude.sig_sortie.emit()          # un rafraichissement du pied, sans contenu neuf
         self.suivre_jusqu_au_calme(barre)
         self.assertEqual((barre.modele.T, barre.modele.haut_connu), (T, True))
+
+    def test_une_question_envoyee_vue_remontee_garde_le_haut(self):
+        """« la hauteur totale est tres vite perdue au bout de quelques echanges » (24/10/2026) :
+        Entree vue remontee de moins d'un ecran, l'echo arrive pendant le retour en bas."""
+        from qtpy.QtCore import QEvent, Qt
+        from qtpy.QtGui import QKeyEvent
+        claude, barre = self.connaitre_le_haut(page=20)   # 44 lignes chez Claude
+        barre.aller_a(6)
+        self.suivre_jusqu_au_calme(barre)
+        QApplication.sendEvent(claude.terminal,
+                               QKeyEvent(QEvent.KeyPress, Qt.Key_Return, Qt.NoModifier))
+        claude.ecrire(2)
+        self.suivre_jusqu_au_calme(barre)
+        self.assertEqual((barre.modele.d, barre.modele.T), (0, claude.haut))
+        self.assertTrue(barre.modele.haut_connu)
+
+    def test_une_zone_reecrite_sur_place_garde_le_haut(self):
+        """Zone de saisie ou indicateur redessine (3 lignes en place) : rien n'a defile."""
+        claude, barre = self.connaitre_le_haut(page=20)
+        claude.lignes[-3:] = ["saisie %d" % i for i in range(3)]
+        claude.sig_sortie.emit()
+        self.suivre_jusqu_au_calme(barre)
+        self.assertEqual((barre.modele.T, barre.modele.haut_connu), (claude.haut, True))
 
     def test_un_saut_illisible_rehachure(self):
         claude, barre = self.connaitre_le_haut()
