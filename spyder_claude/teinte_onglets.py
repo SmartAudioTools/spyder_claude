@@ -5,7 +5,7 @@ sur l'onglet en mode onglets, or il le faudrait » — la mosaique la portait de
 titre de cellule. Puis, 24/10/2026 : « l'onglet doit etre legerement eclairci de la meme
 maniere que la fenetre quand c'est l'onglet actif, quelle que soit la couleur de fond
 (defaut, rouge, vert) », et « les arrondis exterieurs doivent suivre l'onglet pendant le
-deplacement ».
+deplacement » ; et, survole, l'onglet s'eclaircit sans contour bleu.
 
 Qt n'a pas de fond par onglet, et la feuille de style de Spyder (qdarkstyle) peint le
 fond, l'arrondi et le soulignement de l'onglet actif sans exposer leur geometrie. D'ou :
@@ -117,6 +117,9 @@ class TeinteDesOnglets(QObject):
                 peintre = QPainter(barre)
             option = QStyleOptionTab()
             barre.initStyleOption(option, index)
+            # Survole : eclairci comme le fond gris du fork (patch_spyder_colors.py).
+            if index != barre.currentIndex() and option.state & QStyle.State_MouseOver:
+                couleur = konsole_view.eclaircir(couleur)
             _teindre(peintre, barre, option, couleur)
         if peintre is not None:
             peintre.end()

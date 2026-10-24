@@ -210,10 +210,11 @@ class PanneauClaude(PluginMainWidget):
         # marges de l'onglet : la teinte les debordait et couvrait le cadre du volet.
         # Alpha 2 sur 255, pas 1 : Qt lit un alpha <= 1 comme une FRACTION, et
         # `rgba(0, 0, 0, 1)` donnait des onglets noirs (mesure du 11/10/2026).
+        # Sauf survole (:!hover) : il garde le fond eclairci de PanesTabBarStyleSheet (24/10/2026).
         # Gardee a part : `_appliquer_cadre` y ajoute la couleur du cadre pour l'onglet actif.
         self._feuille_onglets = (
             self._onglets.styleSheet()
-            + "QTabBar#pane-tabbar::tab:!selected { background: rgba(0, 0, 0, 2); }")
+            + "QTabBar#pane-tabbar::tab:!selected:!hover { background: rgba(0, 0, 0, 2); }")
         self._appliquer_cadre(focus=False)
 
         # Des maintenant, avant toute session : le jeu de couleurs aux teintes de l'IDE

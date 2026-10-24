@@ -360,6 +360,44 @@ class TestListeDesSessions(unittest.TestCase):
             QTest.mouseRelease(barre, Qt.LeftButton, Qt.NoModifier,
                                depart + QPoint(40, 0))
 
+    def test_onglet_survole_eclairci_sans_contour_bleu(self):
+        """« quand un onglet est survole, son contour prend le meme bleu que l'onglet qui a
+        le focus. On ne peut pas juste se contenter de l'eclaircissement du fond ? »
+        (24/10/2026). Gris comme teint : fond eclairci, aucun pixel du bleu de focus."""
+        from qtpy import QT5
+        from qtpy.QtGui import QColor, QHoverEvent
+        from spyder.utils.palette import SpyderPalette
+        from spyder.utils.stylesheet import (SMARTOS_ECLAIRCISSEMENT,
+                                             smartos_editor_background)
+        from spyder_konsole import konsole_view
+        self._ouvrir("a")
+        attente = self._ouvrir("b")
+        self._ouvrir("c")
+        self.p.resize(600, 300)
+        self.p.show()
+        self.p._onglets.setCurrentIndex(2)
+        self.p._etats[attente] = "waiting"
+        self.p._appliquer_cadre(focus=False)
+        barre = self.p._onglets.tabBar()
+        bleu = QColor(SpyderPalette.COLOR_ACCENT_3).name()
+        gris = QColor(smartos_editor_background()).lighter(SMARTOS_ECLAIRCISSEMENT).name()
+        teinte = konsole_view.eclaircir(etat_instances.COULEURS["waiting"])
+        for index, attendu in ((0, gris), (1, teinte)):
+            cadre = barre.tabRect(index)
+            point = QPointF(cadre.center())
+            hors = QPointF(-1, -1)
+            APP.sendEvent(barre, QHoverEvent(QEvent.HoverMove, point, hors) if QT5 else
+                          QHoverEvent(QEvent.HoverMove, point,
+                                      QPointF(barre.mapToGlobal(cadre.center())), hors))
+            QApplication.processEvents()
+            image = barre.grab().toImage()
+            self.assertEqual(image.pixelColor(cadre.left() + 4, cadre.center().y()).name(),
+                             attendu, f"onglet {index}")
+            self.assertNotIn(bleu, {image.pixelColor(x, y).name()
+                                    for x in range(cadre.left(), cadre.right() + 1)
+                                    for y in range(cadre.top(), cadre.bottom() + 1)},
+                             f"onglet {index}")
+
     def test_oublier_purge_la_vue(self):
         vue = self._ouvrir()
         self.p._oublier(vue)

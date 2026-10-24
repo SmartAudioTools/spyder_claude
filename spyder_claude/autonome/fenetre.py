@@ -494,7 +494,7 @@ class FenetreClaude(QMainWindow):
         # attribut) — `teinte_onglets` reconnait l'onglet a la couleur de son centre.
         self._feuille_onglets = (
             (theme["feuille_onglets"] if theme else "")
-            + "QTabBar#pane-tabbar::tab:!selected { background: rgba(0, 0, 0, 2); }"
+            + "QTabBar#pane-tabbar::tab:!selected:!hover { background: rgba(0, 0, 0, 2); }"
             # Les 12 px que PanesTabBarStyleSheet pose au-dessus des onglets (place des boutons
             # de coin de Spyder) : retires, onglets en haut comme ceux de la mosaique
             # (11/10/2026 : « les onglets doivent remonter dans la vue onglets »).
