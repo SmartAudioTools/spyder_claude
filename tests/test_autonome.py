@@ -28,7 +28,8 @@ APP = QApplication.instance() or QApplication([])
 
 from spyder_claude import etat_instances, usage  # noqa: E402
 from spyder_claude.autonome.fenetre import (FenetreClaude,  # noqa: E402
-                                            dossier_de_la_ligne_de_commande)
+                                            dossier_de_la_ligne_de_commande,
+                                            demande_de_la_ligne_de_commande)
 
 
 class FausseVue(QWidget):
@@ -575,6 +576,14 @@ class TestMenuDeDolphin(Banc):
         self.assertEqual(vue.envois, ["clear; claude --model claude-opus-5-5\n"])
         self.assertEqual(f.montrees, [True])
 
+    def test_dock_lance_par_le_menu_ouvre_la_demande_sans_session_par_defaut(self):
+        """`--menu` (06/11/2026) : le dock lance par Dolphin ouvre la session demandee des
+        son demarrage, et pas en plus l'onglet par defaut d'un dock sans rien a rouvrir."""
+        f = self.fenetre_du_menu()
+        f.demarrer("lancer\t%s\n" % self.temporaire)
+        self.assertEqual([v.envois for v in f.sessions()],
+                         [["clear; claude --model claude-opus-5-5\n"]])
+
     def test_reprendre_ouvre_le_selecteur(self):
         f = self.fenetre_du_menu()
         self.assertEqual(f.demande_du_menu("reprendre\t%s\n" % self.temporaire), "ok")
@@ -691,6 +700,13 @@ class TestBandeau(Banc):
         self.assertEqual(dossier_de_la_ligne_de_commande(["dock", self.temporaire]),
                          self.temporaire)
         self.assertIsNone(dossier_de_la_ligne_de_commande(["dock"]))
+
+    def test_ligne_de_commande_la_demande_du_menu(self):
+        ligne = "lancer\t%s" % self.temporaire
+        argv = ["dock", "--menu", ligne]
+        self.assertEqual(demande_de_la_ligne_de_commande(argv), ligne)
+        self.assertIsNone(dossier_de_la_ligne_de_commande(argv))
+        self.assertIsNone(demande_de_la_ligne_de_commande(["dock", self.temporaire]))
 
 
 class TestTitre(Banc):

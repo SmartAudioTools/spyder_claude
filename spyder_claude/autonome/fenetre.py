@@ -52,8 +52,8 @@ from qtpy.QtCore import QEvent, QProcess, QSettings, QSize, Qt, QTimer
 from qtpy.QtGui import QPainter
 from qtpy.QtNetwork import QLocalServer, QLocalSocket
 from qtpy.QtWidgets import (QApplication, QFileDialog, QGraphicsOpacityEffect, QHBoxLayout,
-                            QLabel, QMainWindow, QMenu, QPushButton, QSizePolicy, QTabBar,
-                            QTabWidget, QToolButton, QVBoxLayout, QWidget)
+                            QLabel, QMainWindow, QMenu, QMessageBox, QPushButton, QSizePolicy,
+                            QTabBar, QTabWidget, QToolButton, QVBoxLayout, QWidget)
 
 from spyder_claude import etat_instances, usage
 from spyder_claude.compteurs import BandeauUsage
@@ -546,9 +546,16 @@ class FenetreClaude(QMainWindow):
         self._minuteur.setInterval(self.PERIODE_SONDAGE)
         self._minuteur.timeout.connect(self.relire_le_registre)
 
-    def demarrer(self):
-        """Rouvre les conversations de la derniere fois (ou en ouvre une), puis sonde."""
+    def demarrer(self, demande=None):
+        """Rouvre les conversations de la derniere fois, puis sonde. `demande` : une ligne du
+        menu de Dolphin, quand c'est lui qui a lance le dock (`--menu`, cf. `main`) ; elle
+        tient lieu de la session ouverte par defaut quand il n'y a rien a rouvrir.
+        """
         self.rouvrir_les_sessions()
+        if demande:
+            reponse = self.demande_du_menu(demande)
+            if reponse.startswith("refus "):
+                QMessageBox.warning(self, "Claude", reponse[len("refus "):])
         if not self._vues:
             self.ouvrir_session()
         self._minuteur.start()
@@ -683,7 +690,7 @@ class FenetreClaude(QMainWindow):
         et "Reprendre Claude" peuvent ouvrir un nouvel onglet dans Claude Dock ? », puis
         « fait le maintenant ». Une ligne par demande, reponse `ok` ou `refus [raison]` ;
         `claude_dolphin.sh` l'envoie par socat, affiche la raison d'un refus qui en porte
-        une, et retombe sur sa Konsole quand personne ne repond ou sur un `refus` nu. Faux
+        une, lance un dock (`--menu`) quand personne ne repond, sa Konsole sur un `refus` nu. Faux
         si un autre dock ecoute deja : c'est lui qui sert.
         """
         chemin = chemin_du_canal()
@@ -1588,7 +1595,21 @@ class FenetreClaude(QMainWindow):
 
 def dossier_de_la_ligne_de_commande(argv):
     """`claude-dock [dossier]` : le dossier des nouvelles sessions, ou None."""
-    return os.path.abspath(argv[1]) if len(argv) > 1 else None
+    reste = list(argv[1:])
+    if "--menu" in reste:
+        del reste[reste.index("--menu"):reste.index("--menu") + 2]
+    return os.path.abspath(reste[0]) if reste else None
+
+
+def demande_de_la_ligne_de_commande(argv):
+    """`claude-dock --menu <ligne>` : la demande du menu de Dolphin qui a LANCE le dock
+    (06/11/2026, « fais que ça lance Claude Dock s'il n'est pas ouvert », puis « je ne veux
+    pas attendre ») - portee par la ligne de commande, elle n'attend pas que le dock ecoute
+    son socket ; None sans `--menu`.
+    """
+    if "--menu" in argv[1:-1]:
+        return argv[argv.index("--menu", 1) + 1]
+    return None
 
 
 def main(argv=None):
@@ -1597,9 +1618,10 @@ def main(argv=None):
     application.setApplicationName("claude-dock")
     application.setDesktopFileName("claude-dock")
     dossier = dossier_de_la_ligne_de_commande(argv)
+    demande = demande_de_la_ligne_de_commande(argv)
     theme = theme_smartpythoneditor(application)
     fenetre = FenetreClaude(dossier=dossier, theme=theme)
     fenetre.show()
-    fenetre.demarrer()
+    fenetre.demarrer(demande)
     fenetre.ecouter()
     return application.exec_()
