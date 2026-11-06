@@ -51,9 +51,9 @@ import qtawesome as qta
 from qtpy.QtCore import QEvent, QProcess, QSettings, QSize, Qt, QTimer
 from qtpy.QtGui import QPainter
 from qtpy.QtNetwork import QLocalServer, QLocalSocket
-from qtpy.QtWidgets import (QApplication, QGraphicsOpacityEffect, QHBoxLayout, QLabel,
-                            QMainWindow, QPushButton, QSizePolicy, QTabBar, QTabWidget,
-                            QToolButton, QVBoxLayout, QWidget)
+from qtpy.QtWidgets import (QApplication, QFileDialog, QGraphicsOpacityEffect, QHBoxLayout,
+                            QLabel, QMainWindow, QMenu, QPushButton, QSizePolicy, QTabBar,
+                            QTabWidget, QToolButton, QVBoxLayout, QWidget)
 
 from spyder_claude import etat_instances, usage
 from spyder_claude.compteurs import BandeauUsage
@@ -306,15 +306,20 @@ class FenetreClaude(QMainWindow):
     PAUSE_VALIDATION_DICTEE = 300
     #: Les boutons au-dessus du selecteur `claude -r` ; `{depot}` y vaut le nom du dossier de
     #: l'onglet : le Superviseur porte son depot (CLAUDE_supervision.md, « une équipe par
-    #: dépôt »). C'est tout ce qui reste des entrees Dolphin « Nouvelle équipe » / « Reprendre
-    #: équipe » du 23/10/2026, retirees le meme jour (utilisateur : « a-t-on vraiment toujours
-    #: besoin de [...] ? le menu qui permet de choisir le model au démarrage d'un onglet dans
-    #: Claude Dock ne suffit pas ? ») : le dock rouvre deja toute session memorisee.
+    #: dépôt »). Les entrees Dolphin « Nouvelle équipe » / « Reprendre équipe » du 23/10/2026
+    #: ont ete retirees le meme jour ; depuis le 06/11/2026 le menu de Dolphin offre aussi
+    #: « Nouveau superviseur Fable » et « Reprendre superviseur Fable » (`demande_du_menu`),
+    #: mais jamais de reprise d'EQUIPE : un worker ferme l'a ete contexte plein, le superviseur
+    #: en relance un neuf sur l'ETAT.md du precedent (Superviseur SmartTeacher, 06/11/2026).
+    #: « session » et non plus « worker » (06/11/2026) : un vrai worker est ouvert par le
+    #: superviseur (`claude-dock.sh lancer`, nomme, lie a lui) ; ces boutons-la ouvrent une
+    #: session ordinaire, sans nom.
+    OPTIONS_SUPERVISEUR = "--model claude-fable-5-1 -n 'Superviseur {depot}' supervise"
+    OPTIONS_OPUS = "--model claude-opus-5-5"
     NOUVELLES_SESSIONS = (
-        ("Nouveau superviseur Fable",
-         "--model claude-fable-5-1 -n 'Superviseur {depot}' supervise"),
-        ("Nouveau worker Fable", "--model claude-fable-5-1"),
-        ("Nouveau worker Opus", "--model claude-opus-5-5"),
+        ("Nouveau superviseur Fable", OPTIONS_SUPERVISEUR),
+        ("Nouvelle session Fable", "--model claude-fable-5-1"),
+        ("Nouvelle session Opus", OPTIONS_OPUS),
     )
     #: Boutons de fenetre : les mesures et le style de spyder_window_controls (plugin.py,
     #: `_NO_HOVER_BG_MODELE`), sans sa marge basse, qui ne sert que dans sa barre d'outils.
@@ -439,10 +444,13 @@ class FenetreClaude(QMainWindow):
         # [+][grille][parole][dictee][reduire][agrandir][fermer] (demandes du 11/10/2026).
         vocaux, de_fenetre = self._fabriquer_boutons_de_titre(coin)
         for icone, infobulle, rappel in (
-                ("mdi.plus", "Ouvrir une instance Claude", self.ouvrir_session),
+                ("mdi.plus", "Ouvrir une instance Claude", None),
                 ("mdi.view-grid", "Afficher les instances en mosaïque",
                  lambda: self.basculer_mosaique(True))):
             bouton = QToolButton(coin)
+            if rappel is None:
+                self._bouton_plus = bouton
+                rappel = lambda b=bouton: self.demander_un_dossier(b)  # noqa: E731
             bouton.setIcon(self._icone(icone))
             bouton.setAutoRaise(True)
             bouton.setToolTip(infobulle)
@@ -481,7 +489,8 @@ class FenetreClaude(QMainWindow):
         self._mosaique.poser_icone_fermer(self._icone("mdi.close"))
         self._mosaique.sig_disposition_demandee.connect(
             lambda: self.basculer_mosaique(False))
-        self._mosaique.sig_nouvelle_demande.connect(lambda: self.ouvrir_session())
+        self._mosaique.sig_nouvelle_demande.connect(
+            lambda: self.demander_un_dossier(self._mosaique._bouton_nouveau))
         self._mosaique.sig_fermeture_demandee.connect(self._fermer_session)
         self._mosaique.sig_ordre_demande.connect(self._reordonner)
         self._mosaique.poser_pleine_echelle(self.vitesse_maximale())
@@ -611,16 +620,71 @@ class FenetreClaude(QMainWindow):
         vue.setFocus()
         return vue
 
+    # ------------------------------------------------------------------ le « + »
+
+    def dossiers_proposes(self):
+        """Les dossiers du menu du « + » : ceux des onglets ouverts, dans leur ordre, puis
+        ceux des sessions memorisees, puis le dossier par defaut ; sans doublon ni dossier
+        disparu."""
+        candidats = [self._dossiers.get(vue) for vue in self._vues]
+        try:
+            memorisees = json.loads(self._reglages.value(self.CLE_SESSIONS, "") or "[]")
+        except (TypeError, ValueError):
+            memorisees = []
+        for entree in memorisees if isinstance(memorisees, list) else []:
+            if isinstance(entree, list) and len(entree) == 2:
+                candidats.append(entree[1])
+        candidats.append(self._dossier)
+        vus, dossiers = set(), []
+        for dossier in candidats:
+            if not isinstance(dossier, str) or not dossier:
+                continue
+            dossier = dossier.rstrip("/") or "/"
+            if dossier not in vus and os.path.isdir(dossier):
+                vus.add(dossier)
+                dossiers.append(dossier)
+        return dossiers
+
+    def menu_des_dossiers(self, parent=None):
+        """Le menu du « + » (demande du 06/11/2026 : le superviseur partait dans le dossier
+        par defaut, donc dans le mauvais depot) : un dossier choisi ouvre l'onglet sur le
+        selecteur et son bandeau, dans ce dossier ; « Autre dossier… » passe par QFileDialog."""
+        menu = QMenu(parent or self)
+        for dossier in self.dossiers_proposes():
+            action = menu.addAction("%s  —  %s" % (self._nom_du_depot(dossier), dossier))
+            action.triggered.connect(
+                lambda checked=False, d=dossier: self.ouvrir_session(d))
+        menu.addSeparator()
+        autre = menu.addAction("Autre dossier…")
+        autre.triggered.connect(lambda checked=False: self._choisir_un_autre_dossier())
+        return menu
+
+    def demander_un_dossier(self, ancre=None):
+        """Le « + » des onglets comme de la mosaique : le menu des dossiers, sous `ancre`."""
+        menu = self.menu_des_dossiers(self)
+        if ancre is not None and ancre.isVisible():
+            menu.exec_(ancre.mapToGlobal(ancre.rect().bottomLeft()))
+        else:
+            menu.exec_(self.cursor().pos())
+        menu.deleteLater()
+
+    def _choisir_un_autre_dossier(self):
+        dossier = QFileDialog.getExistingDirectory(self, "Dossier de la nouvelle session",
+                                                   self._dossier)
+        if dossier:
+            self.ouvrir_session(dossier)
+
     # ------------------------------------------------------------------ menu de Dolphin
 
     def ecouter(self):
-        """Recoit « Nouveau Claude » / « Reprendre Claude » du menu de Dolphin.
+        """Recoit les quatre entrees du menu de Dolphin (cf. `demande_du_menu`).
 
         DEMANDE (11/10/2026) : « les entrée du menu contextuel d'un dossier "Nouveau Claude"
         et "Reprendre Claude" peuvent ouvrir un nouvel onglet dans Claude Dock ? », puis
-        « fait le maintenant ». Une ligne par demande, `lancer|reprendre<TAB>dossier`,
-        reponse `ok` ; `claude_dolphin.sh` l'envoie par socat et retombe sur sa Konsole
-        quand personne ne repond. Faux si un autre dock ecoute deja : c'est lui qui sert.
+        « fait le maintenant ». Une ligne par demande, reponse `ok` ou `refus [raison]` ;
+        `claude_dolphin.sh` l'envoie par socat, affiche la raison d'un refus qui en porte
+        une, et retombe sur sa Konsole quand personne ne repond ou sur un `refus` nu. Faux
+        si un autre dock ecoute deja : c'est lui qui sert.
         """
         chemin = chemin_du_canal()
         sonde = QLocalSocket(self)
@@ -643,19 +707,51 @@ class FenetreClaude(QMainWindow):
         if not client.canReadLine():
             return
         ligne = bytes(client.readLine()).decode("utf-8", "replace")
-        client.write(b"ok\n" if self.demande_du_menu(ligne) else b"refus\n")
+        client.write((self.demande_du_menu(ligne) + "\n").encode("utf-8"))
         client.flush()
         client.disconnectFromServer()
 
     def demande_du_menu(self, ligne):
-        """`lancer<TAB>dossier` : session neuve ; `reprendre<TAB>dossier` : le selecteur."""
-        mode, _, dossier = ligne.rstrip("\n").partition("\t")
-        if mode not in ("lancer", "reprendre") or not os.path.isdir(dossier):
-            return False
-        fait = self.ouvrir_session(dossier, nouvelle=(mode == "lancer")) is not None
-        if fait:
-            self._se_montrer()
-        return fait
+        """Une entree du menu de Dolphin (06/11/2026) ; rend `ok`, `refus` (la Konsole prend
+        le relais) ou `refus <raison>` (montree a l'utilisateur, pas de Konsole).
+
+        `reprendre<TAB>dossier` : « Reprendre une session », le selecteur et son bandeau.
+        `lancer<TAB>dossier` : « Nouvelle session Opus ».
+        `superviseur<TAB>dossier` : « Nouveau superviseur Fable », session « Superviseur
+        <depot> », onglet « Superviseur : <depot> » (memes options que le bouton du bandeau).
+        `reprendre<TAB>dossier<TAB>session_id` : « Reprendre superviseur Fable » - la
+        derniere session nommee « Superviseur <depot> » de ce dossier, que claude_dolphin.sh
+        a cherchee (`claude -r <nom>` est ambigu, cf. `demande_de_session`). Deja dans un
+        onglet de ce dock : cet onglet passe devant ; portee par une instance vivante
+        ailleurs : refus, deux mains n'ecrivent pas le meme transcript.
+        """
+        champs = ligne.rstrip("\n").split("\t")
+        mode, dossier = (champs + ["", ""])[:2]
+        session = champs[2].strip() if len(champs) > 2 else ""
+        if mode not in ("lancer", "reprendre", "superviseur") or not os.path.isdir(dossier):
+            return "refus"
+        depot = self._nom_du_depot(dossier)
+        if session:
+            for vue, (conversation, _d) in self._conversations.items():
+                if conversation == session:
+                    self.activer_session(self._identifiants[vue])
+                    self._se_montrer()
+                    return "ok"
+            if session in usage.sessions_vivantes():
+                return ("refus le superviseur de %s (%s) est déjà ouvert dans une autre "
+                        "fenêtre" % (depot, session))
+            vue = self.ouvrir_session(dossier, conversation=session,
+                                      nom="Superviseur")
+        elif mode == "superviseur":
+            vue = self.ouvrir_session(dossier, nouvelle=True, nom="Superviseur",
+                                      options=self.OPTIONS_SUPERVISEUR.format(depot=depot))
+        else:
+            vue = self.ouvrir_session(dossier, nouvelle=(mode == "lancer"),
+                                      options=self.OPTIONS_OPUS if mode == "lancer" else "")
+        if vue is None:
+            return "refus"
+        self._se_montrer()
+        return "ok"
 
     # ------------------------------------------------------------------ demandes des sessions
 

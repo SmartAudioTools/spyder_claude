@@ -21,7 +21,8 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from qtpy.QtCore import QSettings, Qt, Signal  # noqa: E402
-from qtpy.QtWidgets import QApplication, QTabBar, QVBoxLayout, QWidget  # noqa: E402
+from qtpy.QtWidgets import (QApplication, QPushButton, QTabBar,  # noqa: E402
+                            QVBoxLayout, QWidget)
 
 APP = QApplication.instance() or QApplication([])
 
@@ -547,7 +548,9 @@ class TestRendu(Banc):
 
 
 class TestMenuDeDolphin(Banc):
-    """« Nouveau Claude » / « Reprendre Claude » de Dolphin, recus par `ecouter`.
+    """Les quatre entrees du menu de Dolphin (06/11/2026), recues par `ecouter` : « Reprendre
+    une session », « Nouvelle session Opus », « Nouveau superviseur Fable », « Reprendre
+    superviseur Fable ».
 
     Le TRANSPORT (socket local, socat) n'est pas exerce ici : le bac a sable de Claude
     interdit les sockets AF_UNIX. Seul le traitement de la ligne l'est.
@@ -559,25 +562,104 @@ class TestMenuDeDolphin(Banc):
         f._se_montrer = lambda: f.montrees.append(True)   # jamais de kdotool au banc
         return f
 
-    def test_lancer_ouvre_une_session_neuve_dans_le_dossier(self):
+    def depot(self, nom="SmartOS"):
+        dossier = os.path.join(self.temporaire, nom)
+        os.makedirs(dossier, exist_ok=True)
+        return dossier
+
+    def test_lancer_ouvre_une_session_opus_neuve_dans_le_dossier(self):
         f = self.fenetre_du_menu()
-        self.assertTrue(f.demande_du_menu("lancer\t%s\n" % self.temporaire))
+        self.assertEqual(f.demande_du_menu("lancer\t%s\n" % self.temporaire), "ok")
         vue = f.sessions()[-1]
         self.assertEqual(vue.demarrages[0][1], self.temporaire)
-        self.assertEqual(vue.envois, ["clear; claude\n"])
+        self.assertEqual(vue.envois, ["clear; claude --model claude-opus-5-5\n"])
         self.assertEqual(f.montrees, [True])
 
     def test_reprendre_ouvre_le_selecteur(self):
         f = self.fenetre_du_menu()
-        self.assertTrue(f.demande_du_menu("reprendre\t%s\n" % self.temporaire))
+        self.assertEqual(f.demande_du_menu("reprendre\t%s\n" % self.temporaire), "ok")
         self.assertEqual(f.sessions()[-1].envois, ["clear; claude -r\n"])
+
+    def test_superviseur_neuf_dans_le_dossier_clique(self):
+        f = self.fenetre_du_menu()
+        depot = self.depot()
+        self.assertEqual(f.demande_du_menu("superviseur\t%s\n" % depot), "ok")
+        vue = f.sessions()[-1]
+        self.assertEqual(vue.demarrages[0][1], depot)
+        self.assertEqual(vue.envois, ["clear; claude --model claude-fable-5-1 "
+                                      "-n 'Superviseur SmartOS' supervise\n"])
+        self.assertEqual(f._titres[vue], "Superviseur : SmartOS")
+        self.assertEqual(f.montrees, [True])
+
+    def test_reprendre_superviseur_rouvre_la_session_donnee(self):
+        f = self.fenetre_du_menu()
+        depot = self.depot()
+        self.assertEqual(f.demande_du_menu("reprendre\t%s\tsess-sup\n" % depot), "ok")
+        vue = f.sessions()[-1]
+        self.assertEqual(vue.envois, ["clear; claude -r sess-sup\n"])
+        self.assertEqual(f._conversations[vue], ("sess-sup", depot))
+        # Deja dans un onglet : cet onglet, pas un second `claude -r` sur le meme transcript.
+        f.ouvrir_session(depot)
+        self.assertEqual(f.demande_du_menu("reprendre\t%s\tsess-sup\n" % depot), "ok")
+        self.assertEqual(len(f.sessions()), 2)
+        self.assertIs(f._onglets.currentWidget(), vue)
+
+    def test_reprendre_superviseur_refuse_s_il_vit_ailleurs(self):
+        f = self.fenetre_du_menu()
+        depot = self.depot()
+        self.statusline(os.getpid(), "pane-ailleurs", "sess-sup", depot)
+        reponse = f.demande_du_menu("reprendre\t%s\tsess-sup\n" % depot)
+        self.assertTrue(reponse.startswith("refus ") and "déjà ouvert" in reponse, reponse)
+        self.assertEqual(f.sessions(), [])
 
     def test_refuse_un_mode_inconnu_ou_un_dossier_absent(self):
         f = self.fenetre_du_menu()
-        self.assertFalse(f.demande_du_menu("effacer\t%s\n" % self.temporaire))
-        self.assertFalse(f.demande_du_menu("lancer\t/nulle/part\n"))
+        self.assertEqual(f.demande_du_menu("effacer\t%s\n" % self.temporaire), "refus")
+        self.assertEqual(f.demande_du_menu("lancer\t/nulle/part\n"), "refus")
         self.assertEqual(f.sessions(), [])
         self.assertEqual(f.montrees, [])
+
+
+class TestPlus(Banc):
+    """Le « + » demande le DOSSIER (06/11/2026) : sans cela, un superviseur ouvert depuis
+    lui partait dans le dossier par defaut, donc dans le mauvais depot."""
+
+    def depot(self, nom):
+        dossier = os.path.join(self.temporaire, nom)
+        os.makedirs(dossier, exist_ok=True)
+        return dossier
+
+    def test_dossiers_des_onglets_puis_memorises_puis_defaut_sans_doublon(self):
+        a, b, c = self.depot("A"), self.depot("B"), self.depot("C")
+        memorisees = json.dumps([["s1", b + "/"], ["s2", c], ["s3", "/nulle/part"]])
+        f = self.fenetre(commande="claude -r", sessions_ouvertes=memorisees)
+        f.ouvrir_session(a)
+        f.ouvrir_session(b)
+        self.assertEqual(f.dossiers_proposes(), [a, b, c, self.temporaire])
+
+    def test_le_menu_ouvre_le_selecteur_dans_le_dossier_choisi(self):
+        f = self.fenetre(commande="claude -r")
+        depot = self.depot("SmartOS")
+        f.ouvrir_session(depot)
+        menu = f.menu_des_dossiers()
+        libelles = [a.text() for a in menu.actions() if not a.isSeparator()]
+        self.assertEqual(libelles[-1], "Autre dossier…")
+        self.assertTrue(libelles[0].startswith("SmartOS"))
+        menu.actions()[0].trigger()
+        vue = f.sessions()[-1]
+        self.assertEqual(len(f.sessions()), 2)
+        self.assertEqual(vue.demarrages[0][1], depot)
+        self.assertEqual(vue.envois, ["clear; claude -r\n"])
+        self.assertIn(vue, f._bandeaux)            # le bandeau, donc « Nouveau superviseur »
+
+    def test_les_deux_plus_passent_par_le_menu(self):
+        f = self.fenetre(commande="claude -r")
+        demandes = []
+        f.demander_un_dossier = lambda ancre=None: demandes.append(ancre)
+        f._bouton_plus.click()
+        f._mosaique.sig_nouvelle_demande.emit()
+        self.assertEqual(demandes, [f._bouton_plus, f._mosaique._bouton_nouveau])
+        self.assertEqual(f.sessions(), [])
 
 
 class TestBandeau(Banc):
@@ -597,6 +679,13 @@ class TestBandeau(Banc):
         f._relancer_si_prete(vue)      # FausseVue : le shell est au premier plan
         self.assertEqual(vue.envois[-1], "clear; claude --model claude-fable-5-1 "
                                          "-n 'Superviseur SmartOS' supervise\n")
+
+    def test_libelles_session_et_non_worker(self):
+        f = self.fenetre(commande="claude -r")
+        vue = f.ouvrir_session(self.temporaire)
+        boutons = [b.text() for b in f._bandeaux[vue].findChildren(QPushButton)]
+        self.assertEqual(boutons, ["Nouveau superviseur Fable", "Nouvelle session Fable",
+                                   "Nouvelle session Opus"])
 
     def test_ligne_de_commande_le_dossier_seulement(self):
         self.assertEqual(dossier_de_la_ligne_de_commande(["dock", self.temporaire]),
