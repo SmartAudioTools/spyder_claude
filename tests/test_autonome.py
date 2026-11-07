@@ -243,6 +243,34 @@ class TestOrdre(Banc):
                          [["bbb", "/b"], ["aaa", "/a"]])
 
 
+class TestBasculeGardeLeClavier(Banc):
+    """« le focus ne reste pas sur le bon onglet quand on change de vue mosaique/onglets »
+    (utilisateur, 07/11/2026). Mesure avant correctif : en mosaique le clavier allait a la
+    barre d'onglets, au retour il n'etait sur aucune vue."""
+
+    def _a_le_clavier(self, f):
+        actif = APP.focusWidget()
+        return [v for v in f.sessions() if actif is v or v.isAncestorOf(actif)]
+
+    def test_aller_retour(self):
+        f = self.fenetre()
+        a, b, c = f.ouvrir_session(), f.ouvrir_session(), f.ouvrir_session()
+        f.show()
+        f.activateWindow()
+        f._onglets.setCurrentIndex(1)
+        b.setFocus()
+        APP.processEvents()
+        f.basculer_mosaique(True)
+        APP.processEvents()
+        self.assertEqual(self._a_le_clavier(f), [b])
+        c.setFocus()
+        APP.processEvents()
+        f.basculer_mosaique(False)
+        APP.processEvents()
+        self.assertIs(f._onglets.currentWidget(), c)
+        self.assertEqual(self._a_le_clavier(f), [c])
+
+
 class TestReprise(Banc):
     """« pouvoir reprendre toutes les sessions où elles en sont après une fermeture /
     reouverture » (utilisateur, 11/10/2026)."""
@@ -388,6 +416,26 @@ class TestRendu(Banc):
         from qdarkstyle.dark.palette import DarkPalette
         return {"palette": DarkPalette, "fond": self.FOND, "feuille_onglets": "",
                 "peindre_conges": None}
+
+    def test_la_bascule_garde_le_cadre_bleu_sur_la_meme_vue(self):
+        """07/11/2026 : « ce n'est pas que le focus clavier, c'est aussi le focus de cadre
+        bleu avec eclaircissement ». Avant correctif, en mosaique aucune vue n'etait bleue."""
+        f = self.fenetre_visible()
+        a, b, c = f.ouvrir_session(), f.ouvrir_session(), f.ouvrir_session()
+        bleu = f._theme["palette"].COLOR_ACCENT_3
+        f._onglets.setCurrentIndex(1)
+        b.setFocus()
+        APP.processEvents()
+        f.basculer_mosaique(True)
+        APP.processEvents()
+        self.assertEqual([v for v in (a, b, c) if bleu in v.styleSheet()], [b])
+        self.assertEqual(b.liserets[-1][0], bleu)
+        c.setFocus()
+        APP.processEvents()
+        f.basculer_mosaique(False)
+        APP.processEvents()
+        self.assertTrue(f._onglets.tabBar().property("smartos_focus"))
+        self.assertIn(bleu, f.centralWidget().styleSheet())
 
     def fenetre_visible(self):
         f = self.fenetre(theme=self.theme())

@@ -1263,10 +1263,29 @@ class FenetreClaude(QMainWindow):
         actif = (not self._en_mosaique) if actif is None else bool(actif)
         if actif == self._en_mosaique or (actif and not self._vues):
             return
+        # Relevee AVANT : retirer l'onglet courant (ou liberer une cellule) cache la vue
+        # qui a le clavier, et Qt le donne a la barre d'onglets ou a personne (07/11/2026,
+        # « le focus ne reste pas sur le bon onglet quand on change de vue »).
+        vue = self._vue_qui_a_le_clavier()
         if actif:
             self._passer_en_mosaique()
         else:
-            self._revenir_aux_onglets()
+            self._revenir_aux_onglets(vue)
+        if vue is not None:
+            vue.setFocus()
+            if self._en_mosaique:
+                self._repartir_les_cadres()
+
+    def _vue_qui_a_le_clavier(self):
+        """La vue qui contient `self.focusWidget()` (il survit a la desactivation de la
+        fenetre), a defaut l'onglet courant."""
+        actif = self.focusWidget()
+        for vue in self._vues:
+            if actif is not None and (vue is actif or vue.isAncestorOf(actif)):
+                return vue
+        if not self._en_mosaique and self._onglets.currentWidget() in self._vues:
+            return self._onglets.currentWidget()
+        return None
 
     def _passer_en_mosaique(self):
         for index in reversed(range(self._onglets.count())):
@@ -1282,15 +1301,14 @@ class FenetreClaude(QMainWindow):
         self._en_mosaique = True
         self._rafraichir_letat_affiche()
 
-    def _revenir_aux_onglets(self):
-        actif = self.focusWidget()
+    def _revenir_aux_onglets(self, active=None):
         self._mosaique.liberer()
         self._mosaique.hide()
         self._onglets.show()
         courant = 0
         for vue in self._vues:
             index = self._ajouter_onglet(vue)
-            if actif is not None and (vue is actif or vue.isAncestorOf(actif)):
+            if vue is active:
                 courant = index
         self._en_mosaique = False
         # APRES la bascule, pas avant comme dans main_widget : le focus bouge pendant le
