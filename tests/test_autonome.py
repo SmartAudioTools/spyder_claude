@@ -895,6 +895,17 @@ class TestDemandesDesSessions(Banc):
         self.assertEqual(f._titres[vue], "Worker 3 SmartOS : SmartOS")
         self.assertEqual(f.montrees, [])            # rien demande par l'utilisateur
 
+    def test_lancer_avec_effort_en_sixieme_champ(self):
+        # 08/11/2026 : claude-dock.sh --effort <niveau>, workers mecaniques en reflexion reduite.
+        f = self.fenetre_prete()
+        depot = self.depot()
+        etat_instances.deposer_demande_au_dock(
+            "d1", "lancer\t%s\tWorker 4 SmartOS\tclaude-opus-5-5\tworker\tlow\n" % depot)
+        f.relire_le_registre()
+        self.assertEqual(etat_instances.reponse_du_dock("d1"), "ok Worker 4 SmartOS")
+        self.assertEqual(f.sessions()[-1].envois, [
+            "clear; claude --model claude-opus-5-5 --effort low -n 'Worker 4 SmartOS' worker\n"])
+
     def test_lancer_sans_modele_ni_message_et_message_a_espaces_cite(self):
         f = self.fenetre_prete()
         depot = self.depot()

@@ -785,7 +785,8 @@ class FenetreClaude(QMainWindow):
         champs = ligne.rstrip("\n").split("\t")
         mode = champs[0]
         if mode == "lancer":
-            dossier, nom, modele, message = (champs[1:] + ["", "", "", ""])[:4]
+            # 6e champ facultatif (08/11/2026) : `claude --effort <niveau>`, workers mecaniques.
+            dossier, nom, modele, message, effort = (champs[1:] + [""] * 5)[:5]
             if not os.path.isdir(dossier):
                 return "refus dossier introuvable : %s" % dossier
             if not nom.strip():
@@ -793,6 +794,8 @@ class FenetreClaude(QMainWindow):
             options = []
             if modele:
                 options += ["--model", shlex.quote(modele)]
+            if effort:
+                options += ["--effort", shlex.quote(effort)]
             options += ["-n", shlex.quote(nom)]
             if message:
                 options.append(shlex.quote(message))
