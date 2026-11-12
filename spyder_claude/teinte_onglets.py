@@ -52,11 +52,17 @@ def onglet_tire(barre):
 _FORMES = {}
 
 
+def _entier(drapeau):
+    """Un enum ou un drapeau Qt en entier : PySide6 refuse `int(StateFlag)`, et l'exception
+    levee dans le filtre de repeinte laissait un QPainter actif, puis un segfault (12/11/2026)."""
+    return int(getattr(drapeau, "value", drapeau))
+
+
 def _forme(barre, option):
     """La region du fond de l'onglet decrit par `option`, en coordonnees de l'onglet."""
     cadre = option.rect
-    cle = (cadre.width(), cadre.height(), int(option.state), int(option.position),
-           int(option.selectedPosition), int(option.shape), id(barre.style()),
+    cle = (cadre.width(), cadre.height(), _entier(option.state), _entier(option.position),
+           _entier(option.selectedPosition), _entier(option.shape), id(barre.style()),
            barre.palette().cacheKey())
     region = _FORMES.get(cle)
     if region is None:
@@ -78,9 +84,11 @@ def _teindre(peintre, barre, option, couleur):
     """La couleur sur le fond de l'onglet decrit par `option`, puis son libelle."""
     cadre = option.rect
     peintre.save()
-    peintre.setClipRegion(_forme(barre, option).translated(cadre.topLeft()))
-    peintre.fillRect(cadre, QColor(couleur))
-    peintre.restore()
+    try:
+        peintre.setClipRegion(_forme(barre, option).translated(cadre.topLeft()))
+        peintre.fillRect(cadre, QColor(couleur))
+    finally:
+        peintre.restore()
     barre.style().drawControl(QStyle.CE_TabBarTabLabel, option, peintre, barre)
 
 

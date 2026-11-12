@@ -20,7 +20,7 @@ import unittest
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from qtpy.QtCore import QSettings, Qt, Signal  # noqa: E402
+from qtpy.QtCore import QEvent, QObject, QSettings, Qt, Signal  # noqa: E402
 from qtpy.QtWidgets import (QApplication, QPushButton, QTabBar,  # noqa: E402
                             QVBoxLayout, QWidget)
 
@@ -180,12 +180,36 @@ class TestMosaique(Banc):
         vues = [f.ouvrir_session() for _ in range(3)]
         f.basculer_mosaique(True)
         self.assertTrue(f.en_mosaique())
-        self.assertEqual(f._onglets.count(), 0)
+        self.assertTrue(f._onglets.isHidden())
         self.assertEqual(len(f._mosaique.cellules()), 3)
         f.basculer_mosaique(False)
         self.assertFalse(f.en_mosaique())
-        self.assertEqual([f._onglets.widget(i) for i in range(3)], vues)
+        self.assertEqual([f._vue_a(i) for i in range(3)], vues)
         for index in range(3):
+            self.assertIsNotNone(f._onglets.tabBar().tabButton(index, QTabBar.RightSide))
+
+    def test_aller_retour_garde_les_memes_coins(self):
+        # 13/11/2026 : les onglets et leurs coins [tachymetre][croix] restent pendant la
+        # mosaique au lieu d'etre detruits puis recrees a chaque bascule.
+        f = self.fenetre()
+        for _ in range(3):
+            f.ouvrir_session()
+        barre = f._onglets.tabBar()
+        avant = [barre.tabButton(i, QTabBar.RightSide) for i in range(3)]
+        f.basculer_mosaique(True)
+        f.basculer_mosaique(False)
+        self.assertEqual([barre.tabButton(i, QTabBar.RightSide) for i in range(3)], avant)
+
+    def test_session_ouverte_ou_fermee_en_mosaique_refait_les_onglets(self):
+        f = self.fenetre()
+        a, b = f.ouvrir_session(), f.ouvrir_session()
+        f.basculer_mosaique(True)
+        c = f.ouvrir_session()
+        a.terminer()
+        QApplication.processEvents()
+        f.basculer_mosaique(False)
+        self.assertEqual([f._vue_a(i) for i in range(f._onglets.count())], [b, c])
+        for index in range(2):
             self.assertIsNotNone(f._onglets.tabBar().tabButton(index, QTabBar.RightSide))
 
     def test_fermeture_en_mosaique(self):
@@ -205,6 +229,124 @@ class TestMosaique(Banc):
         self.assertFalse(f._mosaique._bouton_reduire.isVisible())
 
 
+class _Redimensions(QObject):
+    """Compte les QEvent.Resize recus par chaque vue observee."""
+
+    def __init__(self, vues):
+        super().__init__()
+        self.comptes = {vue: 0 for vue in vues}
+        for vue in vues:
+            vue.installEventFilter(self)
+
+    def eventFilter(self, objet, evenement):  # noqa: N802 - API Qt
+        if evenement.type() == QEvent.Resize and objet in self.comptes:
+            self.comptes[objet] += 1
+        return False
+
+
+class TestBasculeSansToucherAuxVues(Banc):
+    """« on ne peut pas juste ne pas toucher aux fenêtres en vue onglet tant qu'on ne les
+    rouvre pas ? » (utilisateur, 12/11/2026). Avant : le retour aux onglets defaisait la
+    mosaique (toutes les vues reparentees), le passage en mosaique la refaisait (toutes
+    reparentees et redimensionnees) - chaque terminal faisait redessiner Claude Code."""
+
+    def fenetre_en_mosaique(self, nombre=4):
+        f = self.fenetre()
+        vues = [f.ouvrir_session() for _ in range(nombre)]
+        f.resize(900, 700)
+        f.show()
+        APP.processEvents()
+        f.basculer_mosaique(True)
+        APP.processEvents()
+        return f, vues
+
+    def test_aller_retour_ne_touche_pas_aux_vues_jamais_ouvertes(self):
+        f, (a, b, c, d) = self.fenetre_en_mosaique()
+        cellules = {vue: f._mosaique.cellule_de(vue) for vue in (a, b, c, d)}
+        tailles = {vue: vue.size() for vue in (a, b, c, d)}
+        f._onglets.setCurrentIndex(0)
+        c.setFocus()
+        espion = _Redimensions([b, c, d])
+        f.basculer_mosaique(False)
+        APP.processEvents()
+        self.assertIs(f._vue_a(f._onglets.currentIndex()), c)
+        f.basculer_mosaique(True)
+        APP.processEvents()
+        # Meme mosaique, memes cellules (memes objets), chaque vue dedans.
+        self.assertEqual({v: f._mosaique.cellule_de(v) for v in (a, b, c, d)}, cellules)
+        for vue in (a, b, c, d):
+            self.assertIs(vue.parentWidget(), cellules[vue])
+        # b et d n'ont jamais ete montrees en onglets : ni parent, ni taille, ni evenement.
+        self.assertEqual((espion.comptes[b], espion.comptes[d]), (0, 0))
+        self.assertEqual((b.size(), d.size()), (tailles[b], tailles[d]))
+        # c, montree en onglet, a retrouve sa taille de cellule.
+        self.assertEqual(c.size(), tailles[c])
+
+    def test_le_changement_d_onglet_emprunte_et_rend_la_bonne_vue(self):
+        f, (a, b, c, d) = self.fenetre_en_mosaique()
+        a.setFocus()
+        f.basculer_mosaique(False)
+        APP.processEvents()
+        self.assertIs(a.parentWidget(), f._emplacements[a])
+        f._onglets.setCurrentIndex(2)
+        APP.processEvents()
+        self.assertIs(c.parentWidget(), f._emplacements[c])
+        self.assertIs(a.parentWidget(), f._mosaique.cellule_de(a))
+        for vue in (b, d):
+            self.assertIs(vue.parentWidget(), f._mosaique.cellule_de(vue))
+        self.assertTrue(c.isVisible())
+        self.assertFalse(a.isVisible())
+
+    def test_le_clavier_suit_le_changement_d_onglet(self):
+        f, (a, b, c, d) = self.fenetre_en_mosaique()
+        f.activateWindow()
+        a.setFocus()
+        f.basculer_mosaique(False)
+        APP.processEvents()
+        f._onglets.setCurrentIndex(1)
+        APP.processEvents()
+        actif = APP.focusWidget()
+        self.assertTrue(actif is b or b.isAncestorOf(actif))
+
+    def test_fermeture_en_onglets_puis_mosaique(self):
+        f, (a, b, c, d) = self.fenetre_en_mosaique()
+        b.setFocus()
+        f.basculer_mosaique(False)
+        APP.processEvents()
+        self.assertIs(f._vue_a(f._onglets.currentIndex()), b)
+        b.terminer()                      # la vue montree
+        d.terminer()                      # une vue restee dans sa cellule cachee
+        APP.processEvents()
+        self.assertEqual(f.sessions(), [a, c])
+        self.assertEqual([f._vue_a(i) for i in range(f._onglets.count())], [a, c])
+        courante = f._vue_a(f._onglets.currentIndex())
+        self.assertIs(courante.parentWidget(), f._emplacements[courante])
+        f.basculer_mosaique(True)
+        APP.processEvents()
+        self.assertEqual([cellule.vue for cellule in f._mosaique.cellules()], [a, c])
+        for vue in (a, c):
+            self.assertIs(vue.parentWidget(), f._mosaique.cellule_de(vue))
+        f.basculer_mosaique(False)
+        self.assertEqual([f._vue_a(i) for i in range(f._onglets.count())], [a, c])
+
+    def test_session_ouverte_en_onglets_rejoint_la_mosaique(self):
+        f, (a, b, c, d) = self.fenetre_en_mosaique()
+        f.basculer_mosaique(False)
+        e = f.ouvrir_session()
+        self.assertIs(f._vue_a(f._onglets.currentIndex()), e)
+        self.assertIs(e.parentWidget(), f._emplacements[e])
+        f.basculer_mosaique(True)
+        self.assertEqual([cellule.vue for cellule in f._mosaique.cellules()],
+                         [a, b, c, d, e])
+
+    def test_titre_change_en_onglets_repris_par_la_cellule(self):
+        f, (a, b, c, d) = self.fenetre_en_mosaique()
+        f.basculer_mosaique(False)
+        f._afficher_titre(d, "nouveau titre")
+        f.basculer_mosaique(True)
+        self.assertEqual(f._mosaique.cellule_de(d).titre(), "nouveau titre")
+
+
 class TestOrdre(Banc):
     """« je souhaite pouvoir reorganiser les onglet par glissé / deposser et les fenetre en
     vu mosaique également » (utilisateur, 19/10/2026). Les onglets se deplacaient deja
@@ -219,7 +361,7 @@ class TestOrdre(Banc):
         f.basculer_mosaique(True)
         self.assertEqual([cellule.vue for cellule in f._mosaique.cellules()], [b, c, a])
         f.basculer_mosaique(False)
-        self.assertEqual([f._onglets.widget(i) for i in range(3)], [b, c, a])
+        self.assertEqual([f._vue_a(i) for i in range(3)], [b, c, a])
 
     def test_un_depot_en_mosaique_reordonne_et_revient_en_onglets(self):
         f = self.fenetre()
@@ -229,7 +371,7 @@ class TestOrdre(Banc):
         self.assertTrue(f.en_mosaique())
         self.assertEqual([cellule.vue for cellule in f._mosaique.cellules()], [c, a, b])
         f.basculer_mosaique(False)
-        self.assertEqual([f._onglets.widget(i) for i in range(3)], [c, a, b])
+        self.assertEqual([f._vue_a(i) for i in range(3)], [c, a, b])
 
     def test_l_ordre_est_memorise(self):
         f = self.fenetre()
@@ -267,7 +409,7 @@ class TestBasculeGardeLeClavier(Banc):
         APP.processEvents()
         f.basculer_mosaique(False)
         APP.processEvents()
-        self.assertIs(f._onglets.currentWidget(), c)
+        self.assertIs(f._vue_a(f._onglets.currentIndex()), c)
         self.assertEqual(self._a_le_clavier(f), [c])
 
 
@@ -326,6 +468,61 @@ class TestReprise(Banc):
         self.assertIn("deja-prise", f.statusBar().currentMessage())
         # Elle reste memorisee : l'autre dock peut l'avoir fermee au prochain lancement.
         self.assertEqual(f._sessions_memorisees, [["deja-prise", "/a"], ["libre", "/b"]])
+
+    def test_un_second_dock_n_efface_pas_les_sessions_du_premier(self):
+        """12/11/2026 : un second dock, lance pendant que le premier portait 19 sessions,
+        ecrivait au premier battement SA liste seule ; le premier plante, elles etaient
+        perdues. Echoue sans `_reservees` dans `_memoriser_les_sessions`."""
+        reglages = {"sessions_ouvertes": json.dumps([["du-premier", "/a"]])}
+        self.statusline(os.getpid(), "onglet-du-premier", "du-premier", "/a")
+        f = self.fenetre(**reglages)
+        f.demarrer()
+        self.assertEqual(len(f.sessions()), 1)          # la session neuve, seule
+        vue = f.sessions()[0]
+        self.statusline(os.getpid(), f.identifiant_de(vue), "neuve", "/b")
+        f.relire_le_registre()
+        self.assertEqual(json.loads(f._reglages.value("sessions_ouvertes")),
+                         [["neuve", "/b"], ["du-premier", "/a"]])
+
+    def test_une_reservee_fermee_dans_l_autre_dock_sort_de_la_liste(self):
+        reglages = {"sessions_ouvertes": json.dumps([["du-premier", "/a"]]),
+                    "sessions_fermees": json.dumps(["du-premier"])}
+        self.statusline(os.getpid(), "onglet-du-premier", "du-premier", "/a")
+        f = self.fenetre(**reglages)
+        f.demarrer()
+        f._reservees = [["du-premier", "/a"]]
+        f._ecrire_les_fermees(["du-premier"])
+        vue = f.sessions()[0]
+        self.statusline(os.getpid(), f.identifiant_de(vue), "neuve", "/b")
+        f.relire_le_registre()
+        self.assertEqual(json.loads(f._reglages.value("sessions_ouvertes")),
+                         [["neuve", "/b"]])
+
+    def test_chaque_liste_ecrite_a_sa_copie_datee(self):
+        """« il ne faudrait pas écraser, mais avoir des fichiers incrementaux avec des
+        dates » (utilisateur, 12/11/2026)."""
+        f = self.fenetre()
+        f.demarrer()
+        vue = f.sessions()[0]
+        self.statusline(os.getpid(), f.identifiant_de(vue), "abc-123", "/projet")
+        f.relire_le_registre()
+        dossier = os.path.join(self.temporaire, "claude-dock-historique")
+        copies = sorted(os.listdir(dossier))
+        self.assertTrue(copies and copies[-1].startswith("sessions-"))
+        with open(os.path.join(dossier, copies[-1])) as fichier:
+            self.assertEqual(json.load(fichier), [["abc-123", "/projet"]])
+
+    def test_l_historique_garde_les_plus_recentes(self):
+        f = self.fenetre()
+        f.HISTORIQUE_MAXIMUM = 3
+        for i in range(5):
+            f._archiver_la_liste([["s%d" % i, "/p"]])
+            time.sleep(0.002)
+        dossier = os.path.join(self.temporaire, "claude-dock-historique")
+        copies = sorted(os.listdir(dossier))
+        self.assertEqual(len(copies), 3)
+        with open(os.path.join(dossier, copies[-1])) as fichier:
+            self.assertEqual(json.load(fichier), [["s4", "/p"]])
 
     def test_rouvre_aussi_celles_de_smartpythoneditor(self):
         """« les sessions de SmartPythonEditor ne sont pas réouvertes » (utilisateur,
@@ -428,14 +625,14 @@ class TestRendu(Banc):
         APP.processEvents()
         f.basculer_mosaique(True)
         APP.processEvents()
-        self.assertEqual([v for v in (a, b, c) if bleu in v.styleSheet()], [b])
+        self.assertEqual([v for v in (a, b, c) if v.property("smartos_cadre") == "focus"], [b])
         self.assertEqual(b.liserets[-1][0], bleu)
         c.setFocus()
         APP.processEvents()
         f.basculer_mosaique(False)
         APP.processEvents()
         self.assertTrue(f._onglets.tabBar().property("smartos_focus"))
-        self.assertIn(bleu, f.centralWidget().styleSheet())
+        self.assertEqual(c.property("smartos_cadre"), "focus")
 
     def fenetre_visible(self):
         f = self.fenetre(theme=self.theme())
@@ -444,18 +641,74 @@ class TestRendu(Banc):
         APP.processEvents()
         return f
 
+    def test_aller_retour_ne_restyle_que_la_vue_active(self):
+        """12/11/2026, bascule de 0,5 s a 10 vues, dont 0,3 s de setStyleSheet : la feuille
+        du widget central changeait (coin carre en mosaique, arrondi en onglets) et
+        repolissait toutes les vues ; chaque vue cachee passait au focus en onglets et le
+        quittait en mosaique (un jeu de couleurs de terminal a chaque fois). « Une vue qui
+        n'est pas affichee ne change pas d'etat pendant la bascule. »"""
+        f = self.fenetre_visible()
+        vues = [f.ouvrir_session() for _ in range(6)]
+        active = vues[2]
+        f._onglets.setCurrentIndex(2)       # coin arrondi en onglets, carre en mosaique
+        active.setFocus()
+        APP.processEvents()
+        f.basculer_mosaique(True)           # premier passage : construit la mosaique
+        f.basculer_mosaique(False)
+        APP.processEvents()
+        cachees = [v for v in vues if v is not active]
+        suivies = set(cachees)
+        for vue in cachees:
+            suivies.update(vue.findChildren(QWidget))
+        restylees, feuilles = [], []
+
+        class Espion(QObject):
+            def eventFilter(self, objet, evenement):
+                if evenement.type() == QEvent.StyleChange and objet in suivies:
+                    restylees.append(objet)
+                return False
+
+        espion = Espion()
+        poser = QWidget.setStyleSheet
+        cibles = {f.centralWidget(), f._onglets, *vues}
+
+        def compter(widget, feuille):
+            if widget in cibles:
+                feuilles.append(widget)
+            return poser(widget, feuille)
+
+        liserets = {vue: len(vue.liserets) for vue in cachees}
+        APP.installEventFilter(espion)
+        QWidget.setStyleSheet = compter
+        try:
+            for sens in (True, False, True, False):
+                f.basculer_mosaique(sens)
+                APP.processEvents()
+        finally:
+            QWidget.setStyleSheet = poser
+            APP.removeEventFilter(espion)
+        self.assertEqual(feuilles, [], "feuille reposee sur le centre, les onglets ou une vue")
+        self.assertEqual(len(restylees), 0, "vues cachees repolies")
+        changements = {vues.index(v): v.liserets[n:] for v, n in liserets.items()
+                       if len(set(v.liserets[n - 1:])) > 1}
+        self.assertEqual(changements, {}, "liseret change sur une vue cachee")
+        self.assertIs(f._vue_a(f._onglets.currentIndex()), active)
+        self.assertEqual(active.property("smartos_cadre"), "focus")
+
     def test_cadre_bleu_quand_le_dock_a_le_clavier(self):
         from qdarkstyle.dark.palette import DarkPalette as P
         f = self.fenetre_visible()
         vue = f.ouvrir_session()
         APP.processEvents()
+        # Feuilles fixes (gris par defaut, bleu sous la propriete), cf. _feuille_cadre.
         self.assertIn(P.COLOR_ACCENT_3, f.centralWidget().styleSheet())
-        self.assertIn(P.COLOR_ACCENT_3, f._onglets.styleSheet())
+        self.assertIn('[smartos_focus="true"]', f._onglets.styleSheet())
+        self.assertEqual(vue.property("smartos_cadre"), "focus")
         self.assertTrue(f._onglets.tabBar().property("smartos_focus"))
         self.assertEqual(vue.liserets[-1], (P.COLOR_ACCENT_3, False))
         f._suivre_le_focus(vue, None)          # le clavier quitte la fenetre
-        self.assertIn(P.COLOR_BACKGROUND_4, f.centralWidget().styleSheet())
-        self.assertNotIn(P.COLOR_ACCENT_3, f._onglets.styleSheet())
+        self.assertEqual(vue.property("smartos_cadre"), "repos")
+        self.assertFalse(f._onglets.tabBar().property("smartos_focus"))
         self.assertEqual(vue.liserets[-1], (None, False))
 
     def test_onglet_actif_teint_eclairci_au_focus_et_coin_du_cadre(self):
@@ -467,7 +720,7 @@ class TestRendu(Banc):
         from spyder_konsole import konsole_view
         f = self.fenetre_visible()
         a, _b = f.ouvrir_session(), f.ouvrir_session()
-        f._onglets.setCurrentWidget(a)
+        f._onglets.setCurrentIndex(f._onglet_de(a))   # l'onglet porte un emplacement
         f._etats[a] = "waiting"
         f._appliquer_cadre(True)
         barre = f._onglets.tabBar()
@@ -478,12 +731,11 @@ class TestRendu(Banc):
         # Non eclaircie : le conge l'eclaircit lui-meme au focus.
         self.assertEqual(barre.property("smartos_fond_onglet"),
                          etat_instances.COULEURS["waiting"])
-        carre = "border-top-left-radius: 0px"
-        self.assertIn(carre, f.centralWidget().styleSheet())
+        self.assertEqual(a.property("smartos_coin"), "carre")
         f._onglets.setCurrentIndex(1)
-        self.assertNotIn(carre, f.centralWidget().styleSheet())
+        self.assertEqual(_b.property("smartos_coin"), "arrondi")
         barre.moveTab(1, 0)
-        self.assertIn(carre, f.centralWidget().styleSheet())
+        self.assertEqual(_b.property("smartos_coin"), "carre")
 
     def test_mosaique_un_seul_cadre_bleu_et_poignees_au_fond(self):
         from qdarkstyle.dark.palette import DarkPalette as P
@@ -492,13 +744,54 @@ class TestRendu(Banc):
         f.basculer_mosaique(True)
         b.setFocus()
         APP.processEvents()
-        self.assertIn(P.COLOR_ACCENT_3, b.styleSheet())
-        self.assertIn(P.COLOR_BACKGROUND_4, a.styleSheet())
+        self.assertEqual((a.property("smartos_cadre"), b.property("smartos_cadre")),
+                         ("repos", "focus"))
+        self.assertEqual(b.property("smartos_coin"), "carre")
         self.assertEqual((a.liserets[-1], b.liserets[-1]),
                          ((None, True), (P.COLOR_ACCENT_3, True)))
         self.assertIn(P.COLOR_BACKGROUND_1, f._mosaique._racine.styleSheet())
         f.basculer_mosaique(False)
+        # Aucune vue ne porte de feuille : le cadre vient du widget central, par proprietes.
+        self.assertIs(f._vue_a(f._onglets.currentIndex()), b)
         self.assertEqual((a.styleSheet(), b.styleSheet()), ("", ""))
+        self.assertEqual(b.property("smartos_cadre"), "focus")
+        f._onglets.setCurrentIndex(0)
+        a.setFocus()
+        APP.processEvents()
+        self.assertEqual(a.property("smartos_cadre"), "focus")
+
+    def test_retour_en_mosaique_l_onglet_recouvre_le_haut_de_la_vue(self):
+        """Ligne bleue entre le titre d'une cellule et sa session au retour en mosaique
+        (utilisateur, 12/11/2026) : la vue empruntee, remise dans sa cellule, passait
+        au-dessus de l'onglet, dont le pied deborde sur elle (DEBORD_ONGLET) ; le trait haut
+        du cadre se voyait alors sous le titre. Rendu : sous le titre, a la jonction, c'est
+        l'onglet qui doit etre peint, pas la vue."""
+        from qtpy.QtGui import QColor, QPalette
+        from qtpy.QtWidgets import QWidget
+        f = self.fenetre_visible()
+        vues = [f.ouvrir_session() for _ in range(3)]
+        rouge = QColor("#ff0000")
+        for vue in vues:
+            palette = vue.palette()
+            palette.setColor(QPalette.Window, rouge)
+            vue.setPalette(palette)
+            vue.setAutoFillBackground(True)
+        f.basculer_mosaique(True)
+        vues[1].setFocus()
+        APP.processEvents()
+        f.basculer_mosaique(False)       # emprunt de la vue courante par les onglets
+        APP.processEvents()
+        f.basculer_mosaique(True)        # rendue a sa cellule
+        APP.processEvents()
+        for vue in vues:
+            cellule = f._mosaique.cellule_de(vue)
+            freres = [w for w in cellule.children() if isinstance(w, QWidget)]
+            self.assertGreater(freres.index(cellule._onglet), freres.index(vue))
+            onglet = cellule._onglet.geometry()
+            self.assertGreater(onglet.bottom(), vue.geometry().top())  # il deborde bien
+            image = cellule.grab().toImage()
+            point = (onglet.center().x(), vue.geometry().top())
+            self.assertNotEqual(QColor(image.pixel(*point)), rouge)
 
     def test_onglets_en_haut_et_boutons_immobiles_d_une_vue_a_l_autre(self):
         """« les boutons bougent d'une vue à l'autre . les onglets doivent remonter dans les
@@ -659,7 +952,7 @@ class TestMenuDeDolphin(Banc):
         f.ouvrir_session(depot)
         self.assertEqual(f.demande_du_menu("reprendre\t%s\tsess-sup\n" % depot), "ok")
         self.assertEqual(len(f.sessions()), 2)
-        self.assertIs(f._onglets.currentWidget(), vue)
+        self.assertIs(f._vue_a(f._onglets.currentIndex()), vue)
 
     def test_reprendre_superviseur_refuse_s_il_vit_ailleurs(self):
         f = self.fenetre_du_menu()
@@ -845,7 +1138,10 @@ class TestTitre(Banc):
         f._titre_change(f.sessions()[0], titre)
         self.assertEqual(f._onglets.tabText(0), titre)
         self.assertEqual(f._onglets.tabBar().elideMode(), Qt.ElideLeft)
-        self.assertFalse(f._onglets.usesScrollButtons())
+        # Les fleches en dernier recours : sans elles, 20 onglets elargissaient la fenetre
+        # au-dela de l'ecran (12/11/2026).
+        self.assertTrue(f._onglets.usesScrollButtons())
+        self.assertLess(f._onglets.minimumSizeHint().width(), 400)
 
     def test_le_sujet_annonce_l_emporte_sur_le_titre_de_claude(self):
         f = self.fenetre()

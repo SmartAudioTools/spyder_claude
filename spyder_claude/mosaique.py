@@ -499,10 +499,12 @@ class Cellule(QFrame):
         style = "background-color: transparent;"
         if couleur_texte:
             style += " color: %s;" % couleur_texte
-        self._etiquette.setStyleSheet(
-            "QLabel#entete_cellule_claude { %s padding: %dpx %dpx %dpx %dpx; }"
-            % (style, self.RETRAIT_TEXTE_VERTICAL, self.RETRAIT_TEXTE_COTE,
-               self.RETRAIT_TEXTE_VERTICAL, self.RETRAIT_TEXTE_COTE))
+        feuille = ("QLabel#entete_cellule_claude { %s padding: %dpx %dpx %dpx %dpx; }"
+                   % (style, self.RETRAIT_TEXTE_VERTICAL, self.RETRAIT_TEXTE_COTE,
+                      self.RETRAIT_TEXTE_VERTICAL, self.RETRAIT_TEXTE_COTE))
+        # Seulement si elle change : chaque bascule vers la mosaique la reposait, identique.
+        if feuille != self._etiquette.styleSheet():
+            self._etiquette.setStyleSheet(feuille)
         self._habiller_onglet()
 
     def poser_cadre(self, couleur, fond, liseret=None):
@@ -544,8 +546,32 @@ class Cellule(QFrame):
         self.vue = None
         if vue is not None:
             self._ligne_vue.removeWidget(vue)
-            vue.setParent(None)
+            # Pretee (`preter_la_vue`) : elle vit ailleurs, on ne l'en arrache pas.
+            if vue.parentWidget() is self:
+                vue.setParent(None)
         return vue
+
+    def preter_la_vue(self):
+        """Sort la vue de la cellule SANS la lui retirer : `self.vue` la designe toujours, et
+        `reprendre_la_vue` l'y remet. Le dock autonome l'emprunte ainsi pour l'onglet courant,
+        la mosaique restant construite et cachee (12/11/2026, « ne pas toucher aux fenetres
+        en vue onglet tant qu'on ne les rouvre pas ») : l'appelant la pose dans son layout."""
+        if self.vue is not None:
+            self._ligne_vue.removeWidget(self.vue)
+        return self.vue
+
+    def reprendre_la_vue(self):
+        """Remet a sa place la vue pretee. Cellule cachee : sa geometrie est posee sans
+        evenement de redimensionnement, delivre (un seul) quand la mosaique se montre."""
+        vue = self.vue
+        if vue is not None and vue.parentWidget() is not self:
+            self._ligne_vue.addWidget(vue)
+            vue.show()     # un widget reparente nait cache ; montre avec la cellule
+            # Reparentee, la vue passe AU-DESSUS de ses soeurs : elle recouvrait le pied de
+            # l'onglet, qui deborde sur elle (DEBORD_ONGLET), d'ou le trait bleu du cadre
+            # entre le titre et la session au retour en mosaique (12/11/2026). Meme ordre
+            # qu'a la construction (`__init__`).
+            self._onglet.raise_()
 
 
 class Mosaique(QWidget, GlisserDeposer):
@@ -710,10 +736,12 @@ class Mosaique(QWidget, GlisserDeposer):
         racine = QSplitter(Qt.Vertical, self)
         racine.setObjectName("mosaique_claude")
         racine.setChildrenCollapsible(False)
+        racine.setStyleSheet(getattr(self, "_style_poignees", ""))
         reste = list(elements)
         for numero, combien in enumerate(disposition(len(elements))):
             rangee = QSplitter(Qt.Horizontal, racine)
             rangee.setChildrenCollapsible(False)
+            rangee.setStyleSheet(getattr(self, "_style_poignees", ""))
             for vue, titre in reste[:combien]:
                 cellule = Cellule(vue, titre, rangee, compacte=numero > 0,
                                   hauteur_bandeau=self.hauteur_bandeau)
@@ -943,10 +971,15 @@ class Mosaique(QWidget, GlisserDeposer):
         style = ""
         if couleur:
             style = ("QSplitter::handle { background-color: %s; }" % couleur)
-        self._racine.setStyleSheet(style)
+        self._style_poignees = style
+        # Seulement si elle change : une feuille posee sur le splitter repolit toutes les
+        # cellules et leurs terminaux (0,6 a 1,8 s a 20 sessions, 12/11/2026). `disposer`
+        # la pose deja sur les splitters neufs, AVANT d'y mettre les cellules.
+        if self._racine.styleSheet() != style:
+            self._racine.setStyleSheet(style)
         for index in range(self._racine.count()):
             rangee = self._racine.widget(index)
-            if isinstance(rangee, QSplitter):
+            if isinstance(rangee, QSplitter) and rangee.styleSheet() != style:
                 rangee.setStyleSheet(style)
 
     def cellules(self):

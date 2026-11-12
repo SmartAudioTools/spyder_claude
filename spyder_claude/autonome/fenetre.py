@@ -297,6 +297,11 @@ class FenetreClaude(QMainWindow):
     PERIODE_SONDAGE = 500
     CLE_SESSIONS = "sessions_ouvertes"
     CLE_FERMEES = "sessions_fermees"
+    # Une copie DATEE de chaque liste ecrite, a cote du fichier de reglages (demande de
+    # l'utilisateur, 12/11/2026 : « il ne faudrait pas écraser, mais avoir des fichiers
+    # incrementaux avec des dates »). Les plus anciennes partent au-dela de ce nombre.
+    DOSSIER_HISTORIQUE = "claude-dock-historique"
+    HISTORIQUE_MAXIMUM = 2000
     PERIODE_RELANCE = 100
     PLAFOND_RELANCE = 10000
     PLAFOND_VOILE = 10000
@@ -388,14 +393,20 @@ class FenetreClaude(QMainWindow):
         self._lisseur = usage.Lisseur()
         self._dernieres_fenetres = None
         self._coins = {}
+        # vue -> son emplacement d'onglet ; la seule vue posee dedans hors de sa cellule
+        # (cf. `_suivre_l_onglet_courant`).
+        self._emplacements = {}
+        self._empruntee = None
         self._bandeaux = {}
         self._relances = {}
         self._calmes = {}
         self._conversations = {}
         self._dossiers = {}         # vue -> dossier de la session
         self._sessions_memorisees = None
+        self._reservees = []        # memorisees, non reprises : vivantes dans un autre dock
         self._en_mosaique = False
         self._en_fermeture = False
+        self._en_bascule = False     # cf. _suivre_le_focus
         self._debut_derniere_session = 0.0
         self._script_voix = script_voix or os.path.expanduser("~/.scripts/claude-voix.sh")
         self._boutons_max = []
@@ -419,20 +430,26 @@ class FenetreClaude(QMainWindow):
         self._onglets.setDocumentMode(True)
         self._onglets.setMovable(True)
         self._onglets.tabBar().tabMoved.connect(self._suivre_l_ordre_des_onglets)
+        # AVANT le cadre : la vue de l'onglet courant est empruntee a sa cellule.
+        self._onglets.currentChanged.connect(self._suivre_l_onglet_courant)
         # Le coin du cadre suit le rang de l'onglet actif (cf. main_widget).
         for signal in (self._onglets.currentChanged, self._onglets.tabBar().tabMoved):
-            signal.connect(lambda *_ignore: self._appliquer_cadre(
+            # Pas pendant une bascule : chaque removeTab change l'onglet courant, et
+            # `_basculer_mosaique` pose le cadre une fois a la fin (7,5 s -> mesure 12/11).
+            signal.connect(lambda *_ignore: self._en_bascule or self._appliquer_cadre(
                 bool(self._onglets.tabBar().property("smartos_focus"))))
         barre = self._onglets.tabBar()
         self._teinte = TeinteDesOnglets(
             barre,
             lambda index: etat_instances.COULEURS.get(
-                self._etats.get(self._onglets.widget(index))),
+                self._etats.get(self._vue_a(index))),
             lambda: bool(barre.property("smartos_focus")))
         # Les titres en entier tant qu'ils tiennent tous ; au-dela, Qt les raccourcit tous
-        # par la gauche plutot que de faire defiler.
+        # par la gauche plutot que de faire defiler. Les fleches restent le DERNIER recours :
+        # sans elles, a 20 sessions la largeur minimale des onglets (titre raccourci plus
+        # boutons de coin) depassait l'ecran et la fenetre avec (12/11/2026).
         self._onglets.tabBar().setElideMode(Qt.ElideLeft)
-        self._onglets.setUsesScrollButtons(False)
+        self._onglets.setUsesScrollButtons(True)
         coin = _CoinDesOnglets(self._onglets)
         rangee = QHBoxLayout(coin)
         # Memes ecarts que la rangee de la mosaique (Cellule.MARGE entre boutons), et le pixel
@@ -987,9 +1004,26 @@ class FenetreClaude(QMainWindow):
 
         Le coin est refait a chaque ajout : `removeTab` (passage en mosaique) detruit les
         boutons de l'onglet retire.
+
+        L'onglet porte un EMPLACEMENT, pas la vue (12/11/2026, « ne pas toucher aux fenetres
+        en vue onglet tant qu'on ne les rouvre pas ») : une vue qui a sa cellule y reste, et
+        n'en sort que le temps d'etre l'onglet courant (`_suivre_l_onglet_courant`). Sans
+        cellule (aucune mosaique encore construite, session neuve), l'emplacement est sa
+        place a demeure.
         """
         titre = self._titres.get(vue, "")
-        index = self._onglets.addTab(vue, titre or "Claude")
+        emplacement = self._emplacements.get(vue)
+        if emplacement is None:
+            emplacement = QWidget(self._onglets)
+            emplacement.vue_claude = vue
+            pile = QVBoxLayout(emplacement)
+            pile.setContentsMargins(0, 0, 0, 0)
+            pile.setSpacing(0)
+            self._emplacements[vue] = emplacement
+        if self._mosaique.cellule_de(vue) is None and vue.parentWidget() is not emplacement:
+            emplacement.layout().addWidget(vue)
+            vue.show()
+        index = self._onglets.addTab(emplacement, titre or "Claude")
         self._onglets.setTabToolTip(index, titre)
         coin = CoinOnglet(self._onglets.tabBar(), self._fermer_par_coin,
                           self._icone("mdi.close"),
@@ -1005,8 +1039,71 @@ class FenetreClaude(QMainWindow):
         barre = self._onglets.tabBar()
         for index in range(barre.count()):
             if barre.tabButton(index, QTabBar.RightSide) is coin:
-                self._fermer_session(self._onglets.widget(index))
+                self._fermer_session(self._vue_a(index))
                 return
+
+    # ------------------------------------------------------------------ emplacements
+
+    def _vue_a(self, index):
+        """La vue de l'onglet `index` (son emplacement la designe) ; None hors limites ou
+        pour l'onglet d'etat vide."""
+        return getattr(self._onglets.widget(index), "vue_claude", None)
+
+    def _onglet_de(self, vue):
+        emplacement = self._emplacements.get(vue)
+        return -1 if emplacement is None else self._onglets.indexOf(emplacement)
+
+    def _suivre_l_onglet_courant(self, index):
+        """`currentChanged` : la vue montree retourne dans sa cellule (cachee), celle du
+        nouvel onglet en est empruntee. Seules les vues ainsi affichees changent de parent
+        et de taille ; les autres ne bougent pas d'un aller-retour avec la mosaique.
+
+        Qt a deja change de page quand ce signal arrive : si le clavier etait dans
+        l'ancienne vue, il l'a pose sur le nouvel emplacement, encore vide - il passe a la
+        vue empruntee."""
+        if self._en_mosaique:
+            return
+        vue = self._vue_a(index)
+        if vue is not None and vue is self._empruntee:
+            return
+        ancienne = self._empruntee
+        clavier = self.focusWidget()
+        suivre = clavier is not None and (
+            clavier is self._emplacements.get(vue)
+            or (ancienne is not None and (clavier is ancienne or ancienne.isAncestorOf(clavier))))
+        self._rendre_l_empruntee()
+        if vue is not None:
+            self._emprunter(vue)
+            if suivre:
+                vue.setFocus()
+
+    def _emprunter(self, vue):
+        """`vue` dans son emplacement, sortie de sa cellule s'il y en a une. Son cadre (gris
+        ou bleu, coin) est remis a jour par `_appliquer_cadre`, que `currentChanged` appelle
+        juste apres : les vues cachees ne sont jamais touchees."""
+        emplacement = self._emplacements.get(vue)
+        if emplacement is None:
+            return
+        cellule = self._mosaique.cellule_de(vue)
+        if cellule is not None:
+            cellule.preter_la_vue()
+        if vue.parentWidget() is not emplacement:
+            emplacement.layout().addWidget(vue)
+            vue.show()
+        self._empruntee = vue
+
+    def _rendre_l_empruntee(self):
+        """La vue empruntee retourne dans sa cellule ; sans cellule, elle reste dans son
+        emplacement, cache par la pile des onglets."""
+        vue, self._empruntee = self._empruntee, None
+        if vue is None:
+            return
+        cellule = self._mosaique.cellule_de(vue)
+        if cellule is not None:
+            emplacement = self._emplacements.get(vue)
+            if emplacement is not None:
+                emplacement.layout().removeWidget(vue)
+            cellule.reprendre_la_vue()
 
     def _fermer_session(self, vue):
         """Croix d'onglet ou de cellule : on ARRETE, `_session_terminee` fait le reste."""
@@ -1180,7 +1277,7 @@ class FenetreClaude(QMainWindow):
         """Le sujet annonce par la session (`usage.sujets_par_onglet`) l'emporte sur le titre
         de Claude Code, qui reecrit le sien a chaque image de son temoin anime."""
         self._titres[vue] = texte
-        index = self._onglets.indexOf(vue)
+        index = self._onglet_de(vue)
         # Texte inchange (le cas courant, temoin retire) : setTabText remettrait en page et
         # reteindrait TOUTE la barre, a chaque image de chaque session - O(N^2), 12/11/2026.
         if index >= 0 and self._onglets.tabText(index) != texte:
@@ -1213,20 +1310,32 @@ class FenetreClaude(QMainWindow):
             return
         self._marquer_fermee(vue)
         self._oublier(vue)
+        if self._empruntee is vue:
+            self._empruntee = None      # ne pas la rendre a sa cellule au changement d'onglet
+        emplacement = self._emplacements.pop(vue, None)
         if self._en_mosaique:
             self._mosaique.liberer()
             vue.setParent(None)
             vue.deleteLater()
+            if emplacement is not None:
+                emplacement.deleteLater()
             if self._vues:
                 self._mosaique.disposer(self._elements())
                 self._rafraichir_letat_affiche()
                 return
             self._revenir_aux_onglets()
         else:
-            index = self._onglets.indexOf(vue)
+            # Sa cellule, dans la mosaique cachee, ne doit plus la designer : la mosaique ne
+            # correspond plus a `_vues`, elle sera refaite au prochain passage.
+            cellule = self._mosaique.cellule_de(vue)
+            if cellule is not None:
+                cellule.liberer()
+            index = self._onglets.indexOf(emplacement) if emplacement is not None else -1
             if index >= 0:
                 self._onglets.removeTab(index)
             vue.deleteLater()
+            if emplacement is not None:
+                emplacement.deleteLater()
         self._rouvrir_si_vide()
 
     def _rouvrir_si_vide(self):
@@ -1279,7 +1388,7 @@ class FenetreClaude(QMainWindow):
         Sans cela, l'ordre se perdait au passage en mosaique, que `_vues` dispose, et a la
         reprise, qui rouvre dans l'ordre memorise (« reorganiser les onglet par glisse /
         deposser », utilisateur, 19/10/2026)."""
-        barre = [self._onglets.widget(i) for i in range(self._onglets.count())]
+        barre = [self._vue_a(i) for i in range(self._onglets.count())]
         self._vues = [vue for vue in barre if vue in self._vues]
         self._memoriser_les_sessions()
 
@@ -1294,9 +1403,56 @@ class FenetreClaude(QMainWindow):
         return self._en_mosaique
 
     def basculer_mosaique(self, actif=None):
+        # MESURE TEMPORAIRE (12/11/2026, « c'est tres long pour basculer ») : avec
+        # CLAUDE_DOCK_PROFIL=<dossier>, profil de la bascule ET de la boucle d'evenements
+        # jusqu'au premier repos, ecrit dans <dossier>/bascule-<heure>.txt.
+        dossier_profil = os.environ.get("CLAUDE_DOCK_PROFIL")
+        if dossier_profil:
+            import cProfile, io, pstats
+            profil = cProfile.Profile()
+            debut = time.perf_counter()
+            profil.enable()
+            self._basculer_mosaique(actif)
+            synchrone = time.perf_counter() - debut
+
+            def _fin():
+                profil.disable()
+                total = time.perf_counter() - debut
+                texte = io.StringIO()
+                texte.write("vers %s, %d vues : synchrone %.3f s, jusqu'au repos %.3f s\n\n" % (
+                    "mosaique" if self._en_mosaique else "onglets", len(self._vues),
+                    synchrone, total))
+                pstats.Stats(profil, stream=texte).sort_stats("cumulative").print_stats(45)
+                pstats.Stats(profil, stream=texte).sort_stats("tottime").print_stats(25)
+                with open(os.path.join(dossier_profil, time.strftime("bascule-%H-%M-%S.txt")),
+                          "w", encoding="utf-8") as f:
+                    f.write(texte.getvalue())
+            QTimer.singleShot(0, _fin)
+            return
+        self._basculer_mosaique(actif)
+
+    def _basculer_mosaique(self, actif=None):
         actif = (not self._en_mosaique) if actif is None else bool(actif)
         if actif == self._en_mosaique or (actif and not self._vues):
             return
+        # Les vues changent de parent une a une : le focus saute a chaque fois, et chaque
+        # saut reposait le cadre de TOUTES les vues (8 fois, 6 s a 20 sessions, mesure du
+        # 12/11/2026). Le cadre est pose une seule fois, a la fin.
+        self._en_bascule = True
+        # Une seule repeinture, a la fin, plutot qu'une par vue deplacee.
+        centre = self.centralWidget()
+        centre.setUpdatesEnabled(False)
+        try:
+            try:
+                self._basculer_mosaique_sans_cadre(actif)
+            finally:
+                self._en_bascule = False
+            nouveau = QApplication.focusWidget()
+            self._appliquer_cadre(bool(nouveau is not None and self.isAncestorOf(nouveau)))
+        finally:
+            centre.setUpdatesEnabled(True)
+
+    def _basculer_mosaique_sans_cadre(self, actif):
         # Relevee AVANT : retirer l'onglet courant (ou liberer une cellule) cache la vue
         # qui a le clavier, et Qt le donne a la barre d'onglets ou a personne (07/11/2026,
         # « le focus ne reste pas sur le bon onglet quand on change de vue »).
@@ -1317,40 +1473,64 @@ class FenetreClaude(QMainWindow):
         for vue in self._vues:
             if actif is not None and (vue is actif or vue.isAncestorOf(actif)):
                 return vue
-        if not self._en_mosaique and self._onglets.currentWidget() in self._vues:
-            return self._onglets.currentWidget()
-        return None
+        vue = None if self._en_mosaique else self._vue_a(self._onglets.currentIndex())
+        return vue if vue in self._vues else None
 
     def _passer_en_mosaique(self):
+        """La mosaique cachee est MONTREE telle quelle si elle tient encore `_vues`, dans
+        leur ordre : seule la vue de l'onglet courant y retourne (12/11/2026, « ne pas
+        toucher aux fenetres en vue onglet tant qu'on ne les rouvre pas »). Sinon (session
+        ouverte, fermee ou deplacee entre-temps, premier passage) : refaite en entier.
+
+        Les onglets, eux, RESTENT (13/11/2026, demande de l'utilisateur) : la barre est
+        seulement cachee, avec leurs coins [tachymetre][croix]. Les retirer pour les
+        recreer au retour coutait, a chaque bascule, un coin neuf par session (feuille de
+        style, reparentage, PaletteChange en cascade). Leur titre et leur tachymetre
+        continuent d'etre tenus a jour (`_afficher_titre`, `_appliquer_vitesse`)."""
+        self._rendre_l_empruntee()
+        self._en_mosaique = True
+        self._retirer_etat_vide()
+        self._onglets.hide()
+        self._mosaique.show()
+        if [cellule.vue for cellule in self._mosaique.cellules()] != self._vues:
+            self._mosaique.disposer(self._elements())
+        else:   # les titres ont pu changer en onglets
+            for vue in self._vues:
+                self._mosaique.poser_titre(vue, self._titres.get(vue, ""))
+        self._rafraichir_letat_affiche()
+
+    def _retirer_les_onglets(self):
+        """Tous les onglets, et leurs coins avec eux (`removeTab` detruit ses boutons) ;
+        les emplacements des vues sont gardes (`_emplacements`), le reste detruit."""
         for index in reversed(range(self._onglets.count())):
             widget = self._onglets.widget(index)
             self._onglets.removeTab(index)
-            if widget not in self._vues:
+            if getattr(widget, "vue_claude", None) is None:
                 widget.setParent(None)
                 widget.deleteLater()
         self._coins.clear()
-        self._onglets.hide()
-        self._mosaique.show()
-        self._mosaique.disposer(self._elements())
-        self._en_mosaique = True
-        self._rafraichir_letat_affiche()
 
     def _revenir_aux_onglets(self, active=None):
-        self._mosaique.liberer()
+        """La mosaique est CACHEE, pas defaite : ses vues restent dans leurs cellules, les
+        onglets portent des emplacements (`_ajouter_onglet`) et seule la vue de l'onglet
+        courant en sort.
+
+        Les onglets gardes pendant la mosaique sont REPRIS tels quels s'ils designent
+        encore `_vues` dans leur ordre ; sinon (session ouverte ou fermee en mosaique)
+        refaits en entier, comme avant le 13/11/2026."""
         self._mosaique.hide()
+        # `_en_mosaique` encore vrai : chaque `addTab`/`removeTab` change l'onglet courant,
+        # aucune vue ne doit etre empruntee pour rien.
+        if [self._vue_a(i) for i in range(self._onglets.count())] != self._vues:
+            self._retirer_les_onglets()
+            for vue in self._vues:
+                self._ajouter_onglet(vue)
         self._onglets.show()
-        courant = 0
-        for vue in self._vues:
-            index = self._ajouter_onglet(vue)
-            if vue is active:
-                courant = index
+        courant = max(0, self._onglet_de(active)) if active is not None else 0
         self._en_mosaique = False
-        # APRES la bascule, pas avant comme dans main_widget : le focus bouge pendant le
-        # retour, et tant que `_en_mosaique` est vrai `_appliquer_cadre` reposerait les
-        # feuilles par vue (mesure par TestRendu, 11/10/2026).
-        self._rendre_les_cadres_au_panneau()
         if self._onglets.count():
             self._onglets.setCurrentIndex(courant)
+            self._suivre_l_onglet_courant(courant)   # sans signal si l'index n'a pas change
         self._rafraichir_letat_affiche()
 
     def _rafraichir_letat_affiche(self):
@@ -1374,18 +1554,15 @@ class FenetreClaude(QMainWindow):
         if self._theme is None:
             return
         palette = self._theme["palette"]
-        couleur = palette.COLOR_ACCENT_3 if focus else palette.COLOR_BACKGROUND_4
-        # Sur le widget central : elle descend aux vues, en onglets comme en mosaique.
-        feuille = self._feuille_cadre(couleur,
-                                      coin_carre=self._onglets.currentIndex() <= 0)
-        epais = (f"background-color: {konsole_view.eclaircir(self._theme['fond'])};"
-                 if focus else "")
-        onglets = (self._feuille_onglets
-                   + "QTabBar#pane-tabbar::tab:selected,"
-                   f" QTabBar#pane-tabbar::tab:selected:hover {{ border-color: {couleur}; {epais} }}")
+        # Feuilles FIXES, posees une fois : gris/bleu et coin passent par des proprietes
+        # dynamiques (`_poser_cadre_de_vue`, `smartos_focus` de la barre). Une feuille
+        # changee sur le widget central repolissait TOUTES les vues et leurs terminaux
+        # (30 a 100 ms par bascule, 12/11/2026) ; une propriete ne repolit que son widget.
+        feuille = self._feuille_cadre()
         centre = self.centralWidget()
         if feuille != centre.styleSheet():
             centre.setStyleSheet(feuille)
+        onglets = self._feuille_onglets_du_cadre()
         if onglets != self._onglets.styleSheet():
             self._onglets.setStyleSheet(onglets)
         # Ce que `_smartos_suivre_focus` du fork pose sur la barre du volet actif : lu par
@@ -1397,21 +1574,66 @@ class FenetreClaude(QMainWindow):
             barre.style().unpolish(barre)
             barre.style().polish(barre)
             barre.update()
-        for vue in self._vues:
-            vue.poser_liseret(palette.COLOR_ACCENT_3 if focus else None, double=False)
+        # En mosaique, `_repartir_les_cadres` pose le liseret vue par vue : le poser
+        # d'abord partout le faisait basculer deux fois par vue inactive, et chaque
+        # bascule rechange le jeu de couleurs du terminal (15 ms, mesure du 12/11/2026).
+        # En onglets, seule la vue de l'onglet courant est affichee : c'est la seule qu'on
+        # touche. Les autres (cellules cachees) gardent leur etat jusqu'a ce qu'elles
+        # redeviennent visibles - emprunt suivi de ce meme appel, ou retour en mosaique
+        # (`_repartir_les_cadres`). Les mettre toutes au focus faisait changer de jeu de
+        # couleurs chaque terminal cache a chaque bascule (15 ms piece, 12/11/2026).
         if self._en_mosaique:
             self._repartir_les_cadres()
+        else:
+            vue = self._vue_a(self._onglets.currentIndex())
+            if vue in self._vues:
+                self._poser_cadre_de_vue(vue, focus,
+                                         coin_carre=self._onglets.currentIndex() <= 0)
+                vue.poser_liseret(palette.COLOR_ACCENT_3 if focus else None, double=False)
 
-    def _feuille_cadre(self, couleur, coin_carre=True):
-        """Coin haut gauche carre quand l'onglet actif s'y raccorde, le premier ; arrondi
-        sinon (cf. main_widget._appliquer_cadre). Toujours carre en mosaique."""
+    def _feuille_cadre(self):
+        """Le cadre des vues, pour le widget central : gris au repos, bleu sous
+        `smartos_cadre="focus"` ; coin haut gauche carre sous `smartos_coin="carre"` (quand
+        l'onglet actif s'y raccorde, le premier ; toujours en mosaique), arrondi sinon (cf.
+        main_widget._appliquer_cadre). Les proprietes : `_poser_cadre_de_vue`."""
+        palette = self._theme["palette"]
         return ("QFrame#terminal_smartos {"
-                f" border: 1px solid {couleur};"
-                f" border-radius: {self._theme['palette'].SIZE_BORDER_RADIUS};"
-                + (" border-top-left-radius: 0px;" if coin_carre else "")
-                + " }")
+                f" border: 1px solid {palette.COLOR_BACKGROUND_4};"
+                f" border-radius: {palette.SIZE_BORDER_RADIUS}; }}"
+                ' QFrame#terminal_smartos[smartos_cadre="focus"] {'
+                f" border-color: {palette.COLOR_ACCENT_3}; }}"
+                ' QFrame#terminal_smartos[smartos_coin="carre"] {'
+                " border-top-left-radius: 0px; }")
+
+    def _feuille_onglets_du_cadre(self):
+        """Les onglets, et le contour de l'onglet actif : gris, bleu (fond eclairci) quand
+        la barre porte `smartos_focus` - la meme regle que PanesTabBarStyleSheet du fork,
+        repetee pour le repli sur qdarkstyle qui ne l'a pas."""
+        palette = self._theme["palette"]
+        actif = "QTabBar#pane-tabbar%s::tab:selected, QTabBar#pane-tabbar%s::tab:selected:hover"
+        focus = '[smartos_focus="true"]'
+        return (self._feuille_onglets
+                + (actif % ("", "")) + f" {{ border-color: {palette.COLOR_BACKGROUND_4}; }}"
+                + (actif % (focus, focus))
+                + f" {{ border-color: {palette.COLOR_ACCENT_3};"
+                f" background-color: {konsole_view.eclaircir(self._theme['fond'])}; }}")
+
+    @staticmethod
+    def _poser_cadre_de_vue(vue, focus, coin_carre):
+        """Proprietes lues par `_feuille_cadre`, et repolissage de CETTE vue seulement
+        (pas de ses enfants : la regle ne vise qu'elle), seulement si elles changent."""
+        cadre, coin = ("focus" if focus else "repos"), ("carre" if coin_carre else "arrondi")
+        if vue.property("smartos_cadre") == cadre and vue.property("smartos_coin") == coin:
+            return
+        vue.setProperty("smartos_cadre", cadre)
+        vue.setProperty("smartos_coin", coin)
+        vue.style().unpolish(vue)
+        vue.style().polish(vue)
+        vue.update()
 
     def _suivre_le_focus(self, _ancien, nouveau):
+        if self._en_bascule:
+            return
         self._appliquer_cadre(bool(nouveau is not None and self.isAncestorOf(nouveau)))
 
     def _repartir_les_cadres(self):
@@ -1426,16 +1648,10 @@ class FenetreClaude(QMainWindow):
             a_le_clavier = bool(actif is not None
                                 and (vue is actif or vue.isAncestorOf(actif)))
             couleur = palette.COLOR_ACCENT_3 if a_le_clavier else palette.COLOR_BACKGROUND_4
-            vue.setStyleSheet(self._feuille_cadre(couleur))
+            self._poser_cadre_de_vue(vue, a_le_clavier, coin_carre=True)
             liseret = palette.COLOR_ACCENT_3 if a_le_clavier else None
             vue.poser_liseret(liseret)
             self._mosaique.poser_cadre(vue, couleur, self._theme["fond"], liseret)
-
-    def _rendre_les_cadres_au_panneau(self):
-        """Une feuille posee sur la vue l'emporte sur celle du widget central : sans ce
-        menage, les vues garderaient au retour aux onglets le gris de la mosaique."""
-        for vue in self._vues:
-            vue.setStyleSheet("")
 
     # ------------------------------------------------------------------ registre
 
@@ -1497,14 +1713,46 @@ class FenetreClaude(QMainWindow):
                 self._conversations[vue] = connues[identifiant]
         liste = [list(self._conversations[vue]) for vue in self._vues
                  if vue in self._conversations]
+        # Celles qu'un AUTRE dock portait a la reprise restent dans la liste : sans elles,
+        # un second dock (lance par Dolphin quand le premier, occupe, n'a pas repondu a
+        # temps) ecrasait la liste du premier par la sienne, et le premier plante, ses
+        # 19 sessions etaient perdues (12/11/2026). Seule une fermeture voulue les retire.
+        if self._reservees:
+            portees = {session for session, _ in liste}
+            fermees = set(self._sessions_fermees())
+            liste += [list(e) for e in self._reservees
+                      if e[0] not in portees and e[0] not in fermees]
         if liste != self._sessions_memorisees:
             self._sessions_memorisees = liste
             self._reglages.setValue(self.CLE_SESSIONS, json.dumps(liste))
+            self._archiver_la_liste(liste)
             # Reprise volontaire (« Reprendre Claude », selecteur) : plus une fermeture.
             ouvertes = {session for session, _ in liste}
             self._ecrire_les_fermees(
                 [s for s in self._sessions_fermees() if s not in ouvertes])
             self._reglages.sync()
+
+    def _archiver_la_liste(self, liste):
+        """Copie datee de la liste dans DOSSIER_HISTORIQUE, a cote du fichier de reglages :
+        `sessions-AAAA-MM-JJ_HH-MM-SS-mmm.json`, une par changement. Pour revenir a l'une, la
+        recopier dans la cle `sessions_ouvertes`, dock ferme. Une ecriture impossible ne
+        doit pas arreter le dock : elle est sautee."""
+        dossier = os.path.join(os.path.dirname(self._reglages.fileName()),
+                               self.DOSSIER_HISTORIQUE)
+        maintenant = time.time()
+        nom = "sessions-%s-%03d.json" % (
+            time.strftime("%Y-%m-%d_%H-%M-%S", time.localtime(maintenant)),
+            int(maintenant * 1000) % 1000)
+        try:
+            os.makedirs(dossier, exist_ok=True)
+            with open(os.path.join(dossier, nom), "w", encoding="utf-8") as fichier:
+                json.dump(liste, fichier, ensure_ascii=False, indent=1)
+            anciens = sorted(n for n in os.listdir(dossier)
+                             if n.startswith("sessions-") and n.endswith(".json"))
+            for ancien in anciens[:-self.HISTORIQUE_MAXIMUM]:
+                os.remove(os.path.join(dossier, ancien))
+        except OSError:
+            pass
 
     def _sessions_fermees(self):
         """Les conversations fermees dans CE dock, cle `sessions_fermees` ; illisible : vide."""
@@ -1589,6 +1837,7 @@ class FenetreClaude(QMainWindow):
         for session, dossier in a_rouvrir:
             if session in vivantes:
                 deja_ouvertes.append(session)
+                self._reservees.append([session, dossier])
                 continue
             vue = self.ouvrir_session(dossier, conversation=session)
             if vue is None:
@@ -1628,7 +1877,7 @@ class FenetreClaude(QMainWindow):
             if identifiant_vue != identifiant:
                 continue
             if not self._en_mosaique:
-                index = self._onglets.indexOf(vue)
+                index = self._onglet_de(vue)
                 if index >= 0:
                     self._onglets.setCurrentIndex(index)
             vue.setFocus()
@@ -1687,6 +1936,8 @@ def main(argv=None):
     application = QApplication.instance() or QApplication(argv)
     application.setApplicationName("claude-dock")
     application.setDesktopFileName("claude-dock")
+    from spyder_claude.autonome import echantillonneur
+    echantillonneur.installer()
     dossier = dossier_de_la_ligne_de_commande(argv)
     demande = demande_de_la_ligne_de_commande(argv)
     # Un dock ecoute deja : c'est lui qui sert la demande du menu, et celui-ci s'arrete AVANT
