@@ -714,9 +714,38 @@ class FenetreClaude(QMainWindow):
         if not client.canReadLine():
             return
         ligne = bytes(client.readLine()).decode("utf-8", "replace")
-        client.write((self.demande_du_menu(ligne) + "\n").encode("utf-8"))
+        # Reponse AVANT d'ouvrir l'onglet (12/11/2026). Elle partait apres `ouvrir_session`,
+        # synchrone et lent a 19 vues : claude_dolphin.sh, sans reponse dans son delai, lancait
+        # un second dock pendant que celui-ci ouvrait quand meme la session - deux sessions.
+        # Ce qui peut refuser se decide ici, vite (`refus_du_menu`) ; l'ouverture suit, differee.
+        refus = self.refus_du_menu(ligne)
+        client.write(((refus or "ok") + "\n").encode("utf-8"))
         client.flush()
         client.disconnectFromServer()
+        if refus is None:
+            QTimer.singleShot(0, lambda: self._servir_le_menu(ligne))
+
+    def _servir_le_menu(self, ligne):
+        """L'ouverture differee de `_lire_demande` : le « ok » est deja parti, un refus tardif
+        (session devenue vivante entre-temps) ne peut plus que s'afficher ici."""
+        reponse = self.demande_du_menu(ligne)
+        if reponse.startswith("refus "):
+            QMessageBox.warning(self, "Claude", reponse[len("refus "):])
+
+    def refus_du_menu(self, ligne):
+        """Ce que `demande_du_menu` refuserait, sans rien ouvrir : `refus [raison]`, ou None."""
+        champs = ligne.rstrip("\n").split("\t")
+        mode, dossier = (champs + ["", ""])[:2]
+        session = champs[2].strip() if len(champs) > 2 else ""
+        if mode not in ("lancer", "reprendre", "superviseur") or not os.path.isdir(dossier):
+            return "refus"
+        if not self._moteur:
+            return "refus"      # sans moteur, ouvrir_session rendrait None : la Konsole relaie
+        if session and session not in [c for c, _d in self._conversations.values()] \
+                and session in usage.sessions_vivantes():
+            return ("refus le superviseur de %s (%s) est déjà ouvert dans une autre "
+                    "fenêtre" % (self._nom_du_depot(dossier), session))
+        return None
 
     def demande_du_menu(self, ligne):
         """Une entree du menu de Dolphin (06/11/2026) ; rend `ok`, `refus` (la Konsole prend
@@ -744,9 +773,9 @@ class FenetreClaude(QMainWindow):
                     self.activer_session(self._identifiants[vue])
                     self._se_montrer()
                     return "ok"
-            if session in usage.sessions_vivantes():
-                return ("refus le superviseur de %s (%s) est déjà ouvert dans une autre "
-                        "fenêtre" % (depot, session))
+            refus = self.refus_du_menu(ligne)
+            if refus:
+                return refus
             vue = self.ouvrir_session(dossier, conversation=session,
                                       nom="Superviseur")
         elif mode == "superviseur":
@@ -1635,6 +1664,24 @@ def demande_de_la_ligne_de_commande(argv):
     return None
 
 
+def transmettre_au_dock(demande, delai_ms=15000):
+    """Passe `demande` (une ligne du menu de Dolphin) au dock qui ecoute deja ; rend sa reponse,
+    ou None si aucun dock ne repond (c'est alors a l'appelant d'en etre un)."""
+    client = QLocalSocket()
+    client.connectToServer(chemin_du_canal())
+    if not client.waitForConnected(200):
+        return None
+    client.write((demande.rstrip("\n") + "\n").encode("utf-8"))
+    client.flush()
+    reponse = b""
+    while client.waitForReadyRead(delai_ms):
+        reponse += bytes(client.readAll())
+        if b"\n" in reponse:
+            break
+    client.abort()
+    return reponse.decode("utf-8", "replace").strip() or None
+
+
 def main(argv=None):
     argv = sys.argv if argv is None else argv
     application = QApplication.instance() or QApplication(argv)
@@ -1642,6 +1689,15 @@ def main(argv=None):
     application.setDesktopFileName("claude-dock")
     dossier = dossier_de_la_ligne_de_commande(argv)
     demande = demande_de_la_ligne_de_commande(argv)
+    # Un dock ecoute deja : c'est lui qui sert la demande du menu, et celui-ci s'arrete AVANT
+    # `demarrer` (12/11/2026). Sinon il rouvrait toutes les sessions du registre en double et
+    # reecrivait la liste du premier ; `ecouter` ne faisait que constater qu'il n'etait pas seul.
+    if demande:
+        reponse = transmettre_au_dock(demande)
+        if reponse is not None:
+            if reponse.startswith("refus "):
+                QMessageBox.warning(None, "Claude", reponse[len("refus "):])
+            return 0
     theme = theme_smartpythoneditor(application)
     fenetre = FenetreClaude(dossier=dossier, theme=theme)
     fenetre.show()

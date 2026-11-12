@@ -669,6 +669,38 @@ class TestMenuDeDolphin(Banc):
         self.assertTrue(reponse.startswith("refus ") and "déjà ouvert" in reponse, reponse)
         self.assertEqual(f.sessions(), [])
 
+    def test_le_ok_part_avant_l_ouverture_de_l_onglet(self):
+        """12/11/2026 : la reponse partait apres `ouvrir_session`, lent a 19 vues ;
+        claude_dolphin.sh, sans reponse a temps, lancait un second dock pendant que le
+        premier ouvrait quand meme la session. Le « ok » doit partir AVANT, l'onglet suivre."""
+        f = self.fenetre_du_menu()
+
+        class Client:
+            def __init__(self, ligne):
+                self.ligne, self.ecrits = ligne, []
+            def canReadLine(self):
+                return True
+            def readLine(self):
+                return self.ligne.encode("utf-8")
+            def write(self, donnees):
+                self.ecrits.append((bytes(donnees), len(f.sessions())))
+            def flush(self):
+                pass
+            def disconnectFromServer(self):
+                pass
+
+        client = Client("lancer\t%s\n" % self.temporaire)
+        f._lire_demande(client)
+        self.assertEqual(client.ecrits, [(b"ok\n", 0)])
+        QApplication.processEvents()
+        self.assertEqual(len(f.sessions()), 1)
+        # Un refus, lui, part tel quel et n'ouvre rien.
+        client = Client("lancer\t/nulle/part\n")
+        f._lire_demande(client)
+        QApplication.processEvents()
+        self.assertEqual(client.ecrits, [(b"refus\n", 1)])
+        self.assertEqual(len(f.sessions()), 1)
+
     def test_refuse_un_mode_inconnu_ou_un_dossier_absent(self):
         f = self.fenetre_du_menu()
         self.assertEqual(f.demande_du_menu("effacer\t%s\n" % self.temporaire), "refus")
