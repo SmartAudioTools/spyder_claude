@@ -524,12 +524,16 @@ class BarreDefilementEmulee(QScrollBar):
 
     def update(self):
         """Le pouce suit le modele a chaque repeinte demandee - sauf pendant un glisser, ou il
-        reste sous la souris (il rejoint d au lacher)."""
+        reste sous la souris (il rejoint d au lacher).
+
+        Rien a repeindre si le pouce ne bouge pas : la barre, stylee par la feuille de Spyder,
+        n'est pas opaque, et chacune de ses repeintes refait la fenetre dessous (sonde du dock,
+        12/11/2026 : 15 repeintes de fenetre par seconde pendant la sortie de Claude).
+        setValue repeint de lui-meme quand la valeur change ; survol et glisser, Qt les gere."""
         if not self.isSliderDown():
             self.blockSignals(True)
             self.setValue(round((1 - self._fraction(self.modele.d)) * self.PISTE))
             self.blockSignals(False)
-        super().update()
 
     def resizeEvent(self, evenement):  # noqa: N802 - API Qt
         # Qt donne au pouce gorge * pas / (PISTE + pas) : le pas qui le tient a POUCE px.
