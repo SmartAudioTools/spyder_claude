@@ -1152,7 +1152,9 @@ class FenetreClaude(QMainWindow):
         de Claude Code, qui reecrit le sien a chaque image de son temoin anime."""
         self._titres[vue] = texte
         index = self._onglets.indexOf(vue)
-        if index >= 0:
+        # Texte inchange (le cas courant, temoin retire) : setTabText remettrait en page et
+        # reteindrait TOUTE la barre, a chaque image de chaque session - O(N^2), 12/11/2026.
+        if index >= 0 and self._onglets.tabText(index) != texte:
             self._onglets.setTabText(index, texte)
             self._onglets.setTabToolTip(index, texte)
         if self._en_mosaique:

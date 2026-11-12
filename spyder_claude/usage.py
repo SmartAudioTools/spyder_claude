@@ -83,6 +83,17 @@ def _lire_usages(dossier=None):
     tests/test_usage.py::test_le_fichier_n_est_pas_execute).
     """
     dossier = dossier or etat_instances.dossier_etat()
+    # Un battement du dock appelle cette lecture 4 fois (fenetres, sessions_par_onglet x2,
+    # Lisseur) : 35 fichiers ouverts et 35 kill chacune, dans le fil GUI (12/11/2026). Meme
+    # dossier, meme mtime (le mv de claude-statusline.sh le change) et moins de FRAICHEUR s :
+    # le resultat precedent vaut encore. Le dict rendu n'est jamais modifie par les appelants.
+    try:
+        mtime = os.stat(dossier).st_mtime_ns
+    except OSError:
+        return {}
+    cle, instant, precedent = _CACHE
+    if cle == (dossier, mtime) and time.monotonic() - instant < FRAICHEUR:
+        return precedent
     resultat = {}
     try:
         noms = os.listdir(dossier)
@@ -99,7 +110,14 @@ def _lire_usages(dossier=None):
             continue
         chemin = os.path.join(dossier, nom)
         resultat[pid] = etat_instances._lire_fichier_shell(chemin)
+    _CACHE[:] = [(dossier, mtime), time.monotonic(), resultat]
     return resultat
+
+
+#: Duree de validite du dernier `_lire_usages` (s) : sous le battement de 500 ms du dock,
+#: au-dessus de la duree d'un battement - les 4 lectures d'un meme battement n'en font qu'une.
+FRAICHEUR = 0.25
+_CACHE = [None, 0.0, None]
 
 
 def fenetres(dossier=None, maintenant=None):
@@ -239,15 +257,36 @@ def sujets_par_onglet(dossier=None):
     for pane, (session, _) in sessions_par_onglet(dossier).items():
         if os.sep in session or session.startswith("."):
             continue
-        try:
-            with open(os.path.join(dossier, PREFIXE_SUJET + session),
-                      encoding="utf-8", errors="replace") as fichier:
-                sujet = fichier.readline().strip()
-        except OSError:
-            continue
+        sujet = _premiere_ligne(os.path.join(dossier, PREFIXE_SUJET + session))
         if sujet:
             resultat[pane] = sujet[:SUJET_MAX]
     return resultat
+
+
+#: {chemin: ((inode, mtime_ns, taille), premiere ligne)} : un sujet-* par session, relu
+#: toutes les 500 ms par le dock ; meme principe que etat_instances._lire_fichier_shell.
+_SUJETS_LUS = {}
+
+
+def _premiere_ligne(chemin):
+    """La premiere ligne de `chemin`, sans blancs ; "" si illisible. Relue s'il a change."""
+    try:
+        etat = os.stat(chemin)
+    except OSError:
+        return ""
+    signature = (etat.st_ino, etat.st_mtime_ns, etat.st_size)
+    connu = _SUJETS_LUS.get(chemin)
+    if connu is not None and connu[0] == signature:
+        return connu[1]
+    try:
+        with open(chemin, encoding="utf-8", errors="replace") as fichier:
+            ligne = fichier.readline().strip()
+    except OSError:
+        return ""
+    if len(_SUJETS_LUS) > 1024:
+        _SUJETS_LUS.clear()
+    _SUJETS_LUS[chemin] = (signature, ligne)
+    return ligne
 
 
 def sessions_vivantes(dossier=None):

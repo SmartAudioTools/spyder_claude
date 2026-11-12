@@ -21,7 +21,7 @@
 
 set -u
 
-RACINE=$(dirname "$(dirname "$(dirname "$(dirname "$(realpath "${BASH_SOURCE[0]}")")")")")
+RACINE="${RACINE:-/DATA/Python/SmartOS/Commun}"   # hooks deployes depuis SmartOS (le greffon a quitte ce depot)
 SCRIPT="${SCRIPT:-$RACINE/config_files/Claude/claude-statusline.sh}"
 [ -r "$SCRIPT" ] || { echo "ERREUR : $SCRIPT introuvable" >&2; exit 1; }
 
@@ -84,6 +84,9 @@ JSON
 # stdin redirige depuis chaque fichier donne, chaque sortie et l'etat du registre apres
 # chaque appel captures separement.
 unset CLAUDE_REGISTRE
+# HOME isole : depuis le 05/11/2026 le script rapporte ctx a autoCompactWindow, lu dans
+# ~/.claude/settings.json - sans cela le resultat depend des reglages du compte qui teste.
+export HOME="$TEMP"
 
 jouer() {
 	local pane="$1"; shift

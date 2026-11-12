@@ -47,19 +47,38 @@ def onglet_tire(barre):
     return None
 
 
+#: Forme d'onglet deja calculee, par geometrie et etat : QImage + masque + QRegion a chaque
+#: repeinte, pour chaque onglet teint, coutaient O(N^2) avec N sessions (12/11/2026).
+_FORMES = {}
+
+
+def _forme(barre, option):
+    """La region du fond de l'onglet decrit par `option`, en coordonnees de l'onglet."""
+    cadre = option.rect
+    cle = (cadre.width(), cadre.height(), int(option.state), int(option.position),
+           int(option.selectedPosition), int(option.shape), id(barre.style()),
+           barre.palette().cacheKey())
+    region = _FORMES.get(cle)
+    if region is None:
+        forme = QImage(cadre.size(), QImage.Format_ARGB32_Premultiplied)
+        forme.fill(Qt.transparent)
+        peintre_forme = QPainter(forme)
+        peintre_forme.translate(-cadre.topLeft())
+        barre.style().drawControl(QStyle.CE_TabBarTabShape, option, peintre_forme, barre)
+        peintre_forme.end()
+        fond = forme.pixel(forme.width() // 2, forme.height() // 2)
+        region = QRegion(QBitmap.fromImage(forme.createMaskFromColor(fond, Qt.MaskOutColor)))
+        if len(_FORMES) > 256:      # largeurs elidees, themes : borne la memoire
+            _FORMES.clear()
+        _FORMES[cle] = region
+    return region
+
+
 def _teindre(peintre, barre, option, couleur):
     """La couleur sur le fond de l'onglet decrit par `option`, puis son libelle."""
     cadre = option.rect
-    forme = QImage(cadre.size(), QImage.Format_ARGB32_Premultiplied)
-    forme.fill(Qt.transparent)
-    peintre_forme = QPainter(forme)
-    peintre_forme.translate(-cadre.topLeft())
-    barre.style().drawControl(QStyle.CE_TabBarTabShape, option, peintre_forme, barre)
-    peintre_forme.end()
-    fond = forme.pixel(forme.width() // 2, forme.height() // 2)
-    masque = QBitmap.fromImage(forme.createMaskFromColor(fond, Qt.MaskOutColor))
     peintre.save()
-    peintre.setClipRegion(QRegion(masque).translated(cadre.topLeft()))
+    peintre.setClipRegion(_forme(barre, option).translated(cadre.topLeft()))
     peintre.fillRect(cadre, QColor(couleur))
     peintre.restore()
     barre.style().drawControl(QStyle.CE_TabBarTabLabel, option, peintre, barre)

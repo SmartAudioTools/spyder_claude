@@ -69,7 +69,19 @@ def _lire_fichier_shell(chemin):
     guillemets ni substitution (cf. le bloc `printf` de claude-window.sh). Executer ce
     fichier serait donner les droits de Spyder a n'importe qui sachant ecrire dans
     $XDG_RUNTIME_DIR.
+
+    Un fichier inchange (meme inode, mtime, taille - les hooks ecrivent par mv, donc un
+    inode neuf a chaque ecriture) n'est pas relu : le dock relit tout le registre toutes
+    les 500 ms, ~100 fichiers avec 23 sessions (12/11/2026). Rendu en copie.
     """
+    try:
+        etat = os.stat(chemin)
+    except OSError:
+        return {}
+    signature = (etat.st_ino, etat.st_mtime_ns, etat.st_size)
+    connu = _FICHIERS_LUS.get(chemin)
+    if connu is not None and connu[0] == signature:
+        return dict(connu[1])
     valeurs = {}
     try:
         with open(chemin, "r", encoding="utf-8", errors="replace") as fichier:
@@ -79,7 +91,14 @@ def _lire_fichier_shell(chemin):
                     valeurs[cle.strip()] = valeur.strip()
     except OSError:
         return {}
-    return valeurs
+    if len(_FICHIERS_LUS) > 1024:       # fichiers d'instances mortes : borne la memoire
+        _FICHIERS_LUS.clear()
+    _FICHIERS_LUS[chemin] = (signature, valeurs)
+    return dict(valeurs)
+
+
+#: {chemin: ((inode, mtime_ns, taille), valeurs)} de `_lire_fichier_shell`.
+_FICHIERS_LUS = {}
 
 
 def _vivant(pid):

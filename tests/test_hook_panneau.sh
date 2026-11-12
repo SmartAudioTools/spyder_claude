@@ -21,7 +21,7 @@
 
 set -u
 
-RACINE=$(dirname "$(dirname "$(dirname "$(dirname "$(realpath "${BASH_SOURCE[0]}")")")")")
+RACINE="${RACINE:-/DATA/Python/SmartOS/Commun}"   # hooks deployes depuis SmartOS (le greffon a quitte ce depot)
 # La version VERSIONNEE par defaut. `HOOK=...` permet de viser une autre copie - celle qui
 # est deployee dans ~/.claude/hooks, pour verifier qu'elle est bien a jour, ou une version
 # anterieure, pour verifier que ce test ECHOUE sans le correctif (il l'a ete : sans la

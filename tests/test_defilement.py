@@ -310,6 +310,44 @@ class TestBarre(unittest.TestCase):
         self.assertTrue(barre.modele.haut_connu)
         self.assertEqual((barre.modele.d, barre.modele.T, claude.p), (claude.haut,) * 3)
 
+    def test_la_piste_est_logarithmique(self):
+        """« on ne peut pas avoir une barre avec un deplacement logarithmique ? » (24/10/2026) :
+        le pouce ne depend que de d, haut connu ou non (« oui retire-le », le recalage sur T) ;
+        mi-piste a ECHELLE lignes, trois quarts a 3 ECHELLE, le haut de la piste : tout en haut."""
+        _claude, barre = self.monter()
+        e = barre.ECHELLE
+        barre.modele.haut_connu, barre.modele.T = False, 50
+        self.assertEqual([barre._fraction(d) for d in (0, e, 3 * e)], [0, 0.5, 0.75])
+        self.assertEqual([barre._lignes(f) for f in (0, 0.5, 0.75)], [0, e, 3 * e])
+        self.assertEqual(barre._lignes(1.0), 10 ** 6)
+        barre.modele.T = 5000                     # la sortie grandit : le pouce ne bouge pas
+        self.assertEqual(barre._fraction(e), 0.5)
+        barre.modele.haut_connu, barre.modele.T = True, 3 * e    # connu : l'echelle ne change pas
+        self.assertEqual(barre._fraction(3 * e), 0.75)
+        barre.aller_a(barre._lignes(1.0))                       # tout en haut : borne a T
+        self.assertEqual(barre._cible, 3 * e)
+
+    def test_glisser_le_pouce_en_haut_remonte_jusqu_au_haut(self):
+        """Haut inconnu : le pouce lache en haut de la piste vise le haut, ou qu'il soit."""
+        from qtpy.QtCore import QEvent
+        from qtpy.QtGui import QMouseEvent
+        claude, barre = self.monter()
+        barre.resize(barre.LARGEUR, 400)
+        barre.modele.haut_connu = False
+        pouce = barre._pouce()
+
+        def souris(type_, y):
+            point = QPointF(5, y)
+            QApplication.sendEvent(barre, QMouseEvent(type_, point, QPointF(barre.mapToGlobal(point.toPoint())),
+                                                      Qt.LeftButton, Qt.LeftButton, Qt.NoModifier))
+        souris(QEvent.MouseButtonPress, pouce.center().y())
+        souris(QEvent.MouseMove, pouce.height() / 2)
+        souris(QEvent.MouseButtonRelease, pouce.height() / 2)
+        self.assertEqual(barre._cible, 10 ** 6)
+        attendre(barre, plafond=30)
+        self.assertTrue(barre.modele.haut_connu)
+        self.assertEqual((barre.modele.d, claude.p), (claude.haut, claude.haut))
+
     def test_les_sauts_lointains_passent_par_les_pages(self):
         claude, barre = self.monter(contenu=300)
         for cible in (150, 140, 40, 205, 3, 1000, 100, 104):

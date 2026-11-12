@@ -38,23 +38,30 @@ haut, detecte quand un paquet de crans ne change plus l'ecran (d = T). Entre les
 regle devenue fausse dans une version future de Claude deriverait en silence : l'info-bulle
 compte les inversions depuis la derniere resynchronisation, ce qui la rend visible.
 
-Tant que le haut n'est pas connu, l'etendue T n'est qu'un minorant : le pouce est HACHURE
-et la piste porte une page de marge au-dela de T.
+LA PISTE EST LOGARITHMIQUE (« on ne peut pas avoir une barre avec un deplacement
+logarithmique ? », 24/10/2026, apres « j'ai encore plein de barres rayees ») : le pouce est
+place par d seul, a d / (d + ECHELLE) de la piste depuis le bas. Le bas est precis a la ligne,
+le lointain tasse, et le haut de la piste veut dire « tout en haut », ou qu'il soit : l'etendue
+T n'entre jamais dans la position : l'echelle est FIXE, le pouce ne saute pas quand le haut
+devient connu, et n'atteint pas le haut de la piste au debut d'une conversation (« oui
+retire-le », le recalage sur T : T s'oublie a chaque changement de largeur). Ecartes : garder T d'une ouverture a l'autre (faux
+des que la largeur change, Claude recoupe lui-meme son texte) et l'estimer selon la largeur
+(« l'estimation ne tombera jamais juste »). Le prix : la taille du pouce ne dit plus la
+longueur de la conversation.
 
 CE QUE LA SORTIE AJOUTE se MESURE (« on ne peut vraiment pas mesurer le nombre de lignes
 apporte par chaque nouvelle reponse ?? », 19/10/2026) : pendant que Claude ecrit, le texte de
 l'ecran glisse d'autant, en bas comme vue remontee (Claude ne fige pas la vue). `suivre` lit
 ce glissement entre deux ecrans ; la somme fait grandir T sans perdre le haut connu. Mesure
 (outils_smartos/sonde_suivi.py) : exacte sur 4 reponses sur 5 ; la 5e, sur un ecran pas encore
-plein, saute d'un coup au-dela de tout contenu commun - AMBIGU, et le pouce se rehachure.
+plein, saute d'un coup au-dela de tout contenu commun - AMBIGU, et le haut redevient inconnu.
 """
 
 import time
 from collections import Counter
 
-from qtpy.QtCore import QEvent, QRectF, Qt, QTimer
-from qtpy.QtGui import QBrush, QColor, QPainter
-from qtpy.QtWidgets import QApplication, QWidget
+from qtpy.QtCore import QEvent, Qt, QTimer
+from qtpy.QtWidgets import QApplication, QScrollBar, QStyle, QStyleOptionSlider
 
 #: Ctrl+End, « Jump to bottom » de Claude Code.
 CTRL_FIN = "\x1b[1;5F"
@@ -177,8 +184,16 @@ class ModeleDefilement:
         self.T = max(self.T + lignes, self.d)
 
 
-class BarreDefilementEmulee(QWidget):
-    """La barre, posee a droite d'une VueKonsole ; visible quand Claude defile lui-meme."""
+class BarreDefilementEmulee(QScrollBar):
+    """La barre, posee a droite d'une VueKonsole ; visible quand Claude defile lui-meme.
+
+    Une VRAIE QScrollBar (« ne peux-tu pas utiliser la meme que pour les autres fenetres,
+    avec juste un ajout pour gerer le scroll logarithmique ? », l'utilisateur, 31/10/2026) :
+    elle prend la feuille de style de Spyder (couleurs, survol, gouttiere). Seul l'affichage
+    lui est confie : sa valeur, sur une piste fixe de PISTE pas, est la position
+    logarithmique de d (cf. _fraction), et le glisser, les clics et la molette passent par
+    `aller_a` - jamais par la valeur, qui ne pilote rien.
+    """
 
     LARGEUR = 12
     #: Au-dela de l'etendue connue, on avance par paquets et on regarde l'ecran apres
@@ -203,16 +218,21 @@ class BarreDefilementEmulee(QWidget):
     #: CALME pendant `mesurer` : sonde du 19/10/2026, 576 lignes trouvees exactement de 120 a
     #: 25 ms (128 a 410 lignes/s) ; 40 garde une marge pour une machine chargee.
     CALME_MESURE = 40
+    #: Lignes au-dessus du bas a mi-piste (cf. LA PISTE EST LOGARITHMIQUE) : 600 aux trois quarts.
+    ECHELLE = 200
+    #: Hauteur du pouce (px) : fixe, il ne mesure plus une page sur l'etendue (cf. resizeEvent).
+    POUCE = 24
+    #: Pas de la piste de la QScrollBar : 0 en haut, PISTE en bas (d = 0).
+    PISTE = 10000
 
     def __init__(self, vue):
-        super().__init__(vue)
+        super().__init__(Qt.Vertical, vue)
         self._vue = vue
         self.modele = ModeleDefilement()
         self._cible = 0
         self._verification = None       # (d avant, ecran avant, etalonnage) en attente
         self._page_claude = None        # lignes par touche page, mesurees (cf. _verifier)
         self._paquet = None             # (d avant, ecran avant, crans restants) en cours
-        self._glisse = None             # (y de depart, d de depart) pendant un glisser
         self._reste_molette = 0         # huitiemes de degre pas encore convertis en crans
         self._derniere_molette = 0.0    # instant du dernier evenement de molette, cf. ISOLE
         self._actif = False             # Claude defile-t-il lui-meme ? cf. _sur_mode
@@ -220,6 +240,12 @@ class BarreDefilementEmulee(QWidget):
         self._mesure = None             # (rappel, echeance) de `mesurer` en cours
         self.setFixedWidth(self.LARGEUR)
         self.setCursor(Qt.ArrowCursor)
+        self.setRange(0, self.PISTE)
+        self.setValue(self.PISTE)
+        self.setFocusPolicy(Qt.NoFocus)
+        self.setContextMenuPolicy(Qt.NoContextMenu)     # son menu changerait la valeur seule
+        self.sliderMoved.connect(lambda valeur: self.aller_a(self._lignes(1 - valeur / self.PISTE)))
+        self.sliderReleased.connect(self.update)
         self.hide()
         self._calme = QTimer(self, singleShot=True, interval=self.CALME)
         self._calme.timeout.connect(self._verifier)
@@ -256,6 +282,9 @@ class BarreDefilementEmulee(QWidget):
         if not self._actif:
             return False
         genre = evenement.type()
+        if genre == QEvent.Show and objet is self._terminal:
+            self._suivi.start()         # rattrape la sortie arrivee onglet cache (_sur_sortie)
+            return False
         if genre == QEvent.Wheel:
             self.wheelEvent(evenement)
             return True
@@ -294,7 +323,12 @@ class BarreDefilementEmulee(QWidget):
     def _sur_sortie(self):
         if self._verification is not None:
             self._calme.start()
-        if not self._suivi.isActive():
+        # Onglet cache (QStackedWidget cache la page, la vue) : pas de relecture - 23 sessions
+        # = 23 x 25 lectures/s, 12/11/2026. Le QEvent.Show de eventFilter la rattrape, comme
+        # une sortie arrivee d'un coup. isHidden et non isVisible : une page jamais affichee
+        # n'est pas cachee ; isWindow : une vue de premier niveau (tests) n'est pas un onglet.
+        onglet_cache = self._vue.isHidden() and not self._vue.isWindow()
+        if not self._suivi.isActive() and not onglet_cache:
             self._suivi.start()
 
     def _suivre(self):
@@ -340,7 +374,7 @@ class BarreDefilementEmulee(QWidget):
         « j'ai toujours des barres rayees a l'ouverture d'anciennes sessions » ; l'aller-retour
         apres chaque reponse est refuse (« 1 a 2 s c'est beaucoup trop long »), cache sous le
         voile il ne coute rien. Au plafond MESURE, retour en bas quand meme : T reste un
-        minorant, haut_connu faux, et la barre hachuree le dit (jamais une etendue inventee).
+        minorant, haut_connu faux (jamais une etendue inventee), et le pouce n'en depend pas.
         """
         if not self._actif or self.modele.haut_connu:
             fini()
@@ -471,32 +505,41 @@ class BarreDefilementEmulee(QWidget):
 
     # ------------------------------------------------------------------ dessin
 
-    def _geometrie(self):
-        """(hauteur de la piste en lignes, page) : une page de marge si le haut est inconnu."""
-        page = max(1, self._vue.lignes_ecran())
-        etendue = self.modele.T + (0 if self.modele.haut_connu else page)
-        return etendue + page, page
+    def _fraction(self, d):
+        """Ou est le pouce pour `d` : 0 en bas de la piste, vers 1 en haut."""
+        return d / (d + self.ECHELLE)
+
+    def _lignes(self, fraction):
+        """L'inverse de `_fraction` ; tout en haut : aussi loin qu'il le faudra (aller_a borne a T)."""
+        if fraction >= 0.999:
+            return 10 ** 6
+        f = max(0.0, fraction)
+        return round(self.ECHELLE * f / (1 - f))
 
     def _pouce(self):
-        total, page = self._geometrie()
-        h = self.height()
-        hauteur = max(16.0, h * page / total)
-        haut = (total - page - self.modele.d) / max(1, total - page) * (h - hauteur)
-        return QRectF(1, haut, self.width() - 2, hauteur)
+        option = QStyleOptionSlider()
+        self.initStyleOption(option)
+        return self.style().subControlRect(
+            QStyle.CC_ScrollBar, option, QStyle.SC_ScrollBarSlider, self)
 
-    def paintEvent(self, _evenement):  # noqa: N802 - API Qt
-        peintre = QPainter(self)
-        peintre.setRenderHint(QPainter.Antialiasing)
-        texte = self.palette().color(self.foregroundRole())
-        pouce = QColor(texte)
-        pouce.setAlpha(110)
-        rect = self._pouce()
-        if self.modele.haut_connu:
-            peintre.setBrush(pouce)
-        else:
-            peintre.setBrush(QBrush(pouce, Qt.BDiagPattern))
-        peintre.setPen(pouce)
-        peintre.drawRoundedRect(rect, 3, 3)
+    def update(self):
+        """Le pouce suit le modele a chaque repeinte demandee - sauf pendant un glisser, ou il
+        reste sous la souris (il rejoint d au lacher)."""
+        if not self.isSliderDown():
+            self.blockSignals(True)
+            self.setValue(round((1 - self._fraction(self.modele.d)) * self.PISTE))
+            self.blockSignals(False)
+        super().update()
+
+    def resizeEvent(self, evenement):  # noqa: N802 - API Qt
+        # Qt donne au pouce gorge * pas / (PISTE + pas) : le pas qui le tient a POUCE px.
+        super().resizeEvent(evenement)
+        option = QStyleOptionSlider()
+        self.initStyleOption(option)
+        gorge = self.style().subControlRect(
+            QStyle.CC_ScrollBar, option, QStyle.SC_ScrollBarGroove, self).height()
+        course = gorge - self.POUCE
+        self.setPageStep(round(self.POUCE * self.PISTE / course) if course > 0 else self.PISTE)
 
     def event(self, evenement):
         if evenement.type() == QEvent.ToolTip:
@@ -509,24 +552,13 @@ class BarreDefilementEmulee(QWidget):
         return super().event(evenement)
 
     def mousePressEvent(self, evenement):  # noqa: N802 - API Qt
-        y = evenement.position().y()
         rect = self._pouce()
+        y = evenement.position().y()
         if rect.top() <= y <= rect.bottom():
-            self._glisse = (y, self.modele.d)
+            super().mousePressEvent(evenement)      # glisser : sliderMoved, cf. __init__
         else:                           # clic sur la piste : une page dans ce sens
-            page = self._geometrie()[1]
+            page = max(1, self._vue.lignes_ecran())
             self.aller_a(self._cible + (page if y < rect.top() else -page))
-
-    def mouseMoveEvent(self, evenement):  # noqa: N802 - API Qt
-        if self._glisse is None:
-            return
-        y0, d0 = self._glisse
-        total, page = self._geometrie()
-        lignes_par_pixel = (total - page) / max(1.0, self.height() - self._pouce().height())
-        self.aller_a(round(d0 - (evenement.position().y() - y0) * lignes_par_pixel))
-
-    def mouseReleaseEvent(self, _evenement):  # noqa: N802 - API Qt
-        self._glisse = None
 
     def wheelEvent(self, evenement):  # noqa: N802 - API Qt
         # Un pave tactile envoie des fractions de cran : on les cumule.
