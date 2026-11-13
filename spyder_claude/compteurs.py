@@ -6,8 +6,8 @@ Deux widgets, tous deux nourris depuis usage.py, aucun des deux ne devine ni n'e
   Compteur      le tachymetre d'une conversation — vitesse de depense en $/heure, cadran
                 circulaire style compte-tours de voiture, le remplissage virant du vert
                 au rouge avec la vitesse.
-  BandeauUsage  la bande des deux jauges globales — fenetres de 5 h et de 7 jours, les
-                VRAIS pourcentages du compte tels que Anthropic les calcule.
+  BandeauUsage  la jauge globale de la fenetre de 7 jours, sur toute la largeur — le VRAI
+                pourcentage du compte tel que Anthropic le calcule.
 
 Aucun import Spyder obligatoire : seul un import protege de SpyderPalette, en repli sur
 des couleurs fixes — meme discipline que mosaique.py, pour rester instanciable et
@@ -241,11 +241,6 @@ def fraction_ecoulee(fenetre, duree_s, maintenant=None):
     return 1.0 - max(0.0, min(1.0, restant / duree_s))
 
 
-def _heure(epoch):
-    dt = datetime.fromtimestamp(epoch)
-    return "%dh%02d" % (dt.hour, dt.minute)
-
-
 def _jour_heure(epoch):
     dt = datetime.fromtimestamp(epoch)
     return "%s %d %s, %dh%02d" % (_JOURS[dt.weekday()], dt.day, _MOIS[dt.month - 1],
@@ -253,7 +248,13 @@ def _jour_heure(epoch):
 
 
 class BandeauUsage(QWidget):
-    """La bande des deux jauges globales : fenetre de 5 h et fenetre de 7 jours.
+    """La jauge globale de la fenetre de 7 jours, sur toute la largeur du panneau.
+
+    La jauge de 5 h est RETIREE (13/11/2026) : le serveur ne connait plus de limite de 5 h
+    pour ce compte (five_hour a null, la liste « limits » ne porte que des limites
+    hebdomadaires) ; l'utilisateur : « je ne le vois plus se remplir depuis un moment ».
+    Elle ne montrait plus que « 5 h : — » sur la moitie de la bande. usage.fenetres() rend
+    toujours "cinq_heures" (le registre le porte encore), simplement plus dessine.
 
     Ne se cache JAMAIS, meme sans session ouverte : une bande qui apparait et disparait
     ferait sauter la hauteur du terminal a chaque ouverture/fermeture d'onglet. Sans
@@ -262,9 +263,6 @@ class BandeauUsage(QWidget):
     """
 
     HAUTEUR = 20
-    #: Blanc entre les deux jauges.
-    ECART = 6
-
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setFixedHeight(self.HAUTEUR)
@@ -273,7 +271,6 @@ class BandeauUsage(QWidget):
         # Le texte affiche reste compact (largeur du panneau non garantie) ; l'explication
         # complete vit dans l'info-bulle plutot que dans le libelle.
         self.setToolTip(
-            "Fenêtre de 5 heures : quota de messages remis à zéro toutes les 5 heures.\n"
             "Fenêtre de 7 jours : quota hebdomadaire, remis à zéro à un jour et une heure fixes.\n"
             "Le pourcentage est celui qu'Anthropic calcule ; « reset » donne l'heure du "
             "prochain retour à zéro de cette fenêtre.\n"
@@ -299,16 +296,12 @@ class BandeauUsage(QWidget):
     def paintEvent(self, event):  # noqa: N802 - API Qt
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing, True)
-        largeur = (self.width() - self.ECART) / 2.0
         # DIVISIONS : chaque jauge est graduee en pointilles selon l'unite NATURELLE de sa
         # fenetre — 5 tirages pour les 5 heures (un par heure, tous les 20 %), 7 pour les
         # 7 jours (un par jour, tous les 100/7 ≈ 14,28 %). Demande de l'utilisateur
         # (31/07/2026) : « la consommation journaliere ne doit pas depasser 14,28 % » — les
         # graduations donnent une allure a suivre, pas seulement un pourcentage brut.
-        self._dessiner_jauge(painter, QRectF(0, 0, largeur, self.HAUTEUR),
-                             "cinq_heures", "5 h", _heure, divisions=5, duree_s=5 * 3600)
-        self._dessiner_jauge(painter,
-                             QRectF(largeur + self.ECART, 0, largeur, self.HAUTEUR),
+        self._dessiner_jauge(painter, QRectF(0, 0, self.width(), self.HAUTEUR),
                              "sept_jours", "7 j", _jour_heure, divisions=7,
                              duree_s=7 * 86400)
 

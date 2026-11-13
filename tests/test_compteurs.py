@@ -146,15 +146,6 @@ class TestCouleurParAllure(unittest.TestCase):
     """Preuve visuelle, par ECHANTILLONNAGE DE PIXEL — pas seulement sur les fonctions
     pures — que la couleur du remplissage suit bien l'ecart avec l'allure ideale."""
 
-    def _bande_avec(self, pct, fin_dans_s, largeur=200):
-        bande = compteurs.BandeauUsage()
-        bande.resize(largeur, compteurs.BandeauUsage.HAUTEUR)
-        bande.poser_fenetres({
-            "cinq_heures": {"pct": pct, "fin": time.time() + fin_dans_s, "age": 1},
-            "sept_jours": None,
-        })
-        return bande
-
     def _bande_avec_7j(self, pct, fin_dans_s, largeur=200):
         bande = compteurs.BandeauUsage()
         bande.resize(largeur, compteurs.BandeauUsage.HAUTEUR)
@@ -174,9 +165,8 @@ class TestCouleurParAllure(unittest.TestCase):
         l'echantillon doit rester DANS ce remplissage etroit, pas a un decalage fixe copie
         des autres tests (qui, eux, portent sur des remplissages bien plus larges)."""
         largeur = 200
-        gauche_7j = (largeur - compteurs.BandeauUsage.ECART) / 2.0 + compteurs.BandeauUsage.ECART
         bande = self._bande_avec_7j(pct=19, fin_dans_s=6 * 86400, largeur=largeur)
-        couleur = self._couleur_a(bande, int(gauche_7j) + 8)
+        couleur = self._couleur_a(bande, 8)
         self.assertEqual((couleur.red(), couleur.green(), couleur.blue()), (255, 152, 0))
 
     def _couleur_a(self, bande, x):
@@ -195,15 +185,15 @@ class TestCouleurParAllure(unittest.TestCase):
         return QColor(comptes.most_common(1)[0][0])
 
     def test_bien_en_avance_sur_lallure_est_rouge(self):
-        # 90 % consomme, fenetre de 5 h a peine entamee (10 min sur 300) : tres en avance.
-        bande = self._bande_avec(pct=90, fin_dans_s=5 * 3600 - 600)
+        # 90 % consomme, fenetre de 7 j a peine entamee (10 min) : tres en avance.
+        bande = self._bande_avec_7j(pct=90, fin_dans_s=7 * 86400 - 600)
         couleur = self._couleur_a(bande, 50)
         self.assertEqual((couleur.red(), couleur.green(), couleur.blue()), (211, 47, 47))
 
     def test_bien_en_retard_sur_lallure_est_vert(self):
-        # 40 % consomme, fenetre de 5 h presque terminee (1 min restante) : loin derriere
+        # 40 % consomme, fenetre de 7 j presque terminee (1 min restante) : loin derriere
         # l'allure, donc rassurant malgre un pourcentage qui pourrait sembler eleve.
-        bande = self._bande_avec(pct=40, fin_dans_s=60)
+        bande = self._bande_avec_7j(pct=40, fin_dans_s=60)
         couleur = self._couleur_a(bande, 20)
         self.assertEqual((couleur.red(), couleur.green(), couleur.blue()), (76, 175, 80))
 
